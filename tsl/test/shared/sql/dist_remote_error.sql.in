@@ -4,21 +4,21 @@
 
 -- Import setup file to data nodes.
 \unset ECHO
-\c data_node_1 :ROLE_SUPERUSER
+\c data_node_1
 set client_min_messages to error;
 \ir include/dist_remote_error_setup.sql
 
-\c data_node_2 :ROLE_SUPERUSER
+\c data_node_2
 set client_min_messages to error;
 \ir include/dist_remote_error_setup.sql
 
 \set sleepy_recv 1
-\c data_node_3 :ROLE_SUPERUSER
+\c data_node_3
 set client_min_messages to error;
 \ir include/dist_remote_error_setup.sql
 \unset sleepy_recv
 
-\c :TEST_DBNAME :ROLE_SUPERUSER
+\c :TEST_DBNAME
 set client_min_messages to error;
 \ir include/dist_remote_error_setup.sql
 \set ECHO all

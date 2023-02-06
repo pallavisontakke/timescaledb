@@ -2,7 +2,7 @@
 -- Please see the included NOTICE for copyright information and
 -- LICENSE-TIMESCALE for a copy of the license.
 
-\c :TEST_DBNAME :ROLE_SUPERUSER
+\c :TEST_DBNAME
 CREATE OR REPLACE FUNCTION test_with_clause_filter(with_clauses TEXT[][])
     RETURNS TABLE(namespace TEXT, name TEXT, value TEXT, filtered BOOLEAN)
     AS :MODULE_PATHNAME, 'ts_test_with_clause_filter' LANGUAGE C VOLATILE STRICT;

@@ -78,7 +78,7 @@ set(PG_REGRESS_OPTS_EXTRA
     --launcher=${PRIMARY_TEST_DIR}/runner.sh)
 
 set(PG_REGRESS_SHARED_OPTS_EXTRA
-    --create-role=${TEST_ROLE_SUPERUSER},${TEST_ROLE_DEFAULT_PERM_USER},${TEST_ROLE_DEFAULT_PERM_USER_2}
+    --create-role=${TEST_ROLE_DEFAULT_PERM_USER},${TEST_ROLE_DEFAULT_PERM_USER_2}
     --dbname=${TEST_DBNAME}
     --launcher=${PRIMARY_TEST_DIR}/runner_shared.sh)
 
