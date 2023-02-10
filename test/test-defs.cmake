@@ -22,20 +22,35 @@ set(TEST_CLUSTER ${TEST_OUTPUT_DIR}/testcluster)
 
 # Basic connection info for test instance
 set(TEST_PGPORT_LOCAL
-    5432
+    33653
     CACHE STRING "The port of a running PostgreSQL instance")
 set(TEST_PGHOST
-    localhost
+    g3c08m6jel.wslct1863h.tsdb.cloud.timescale.com
     CACHE STRING "The hostname of a running PostgreSQL instance")
 set(TEST_PGUSER
-    ${TEST_ROLE_DEFAULT_PERM_USER}
+    tsdbadmin
     CACHE STRING "The PostgreSQL test user")
 set(TEST_DBNAME
-    single
+    tsdb
     CACHE STRING "The database name to use for tests")
 set(TEST_PGPORT_TEMP_INSTANCE
-    55432
+    33653
     CACHE STRING "The port to run a temporary test PostgreSQL instance on")
+#set(TEST_PGPORT_LOCAL
+#    5432
+#    CACHE STRING "The port of a running PostgreSQL instance")
+#set(TEST_PGHOST
+#    localhost
+#    CACHE STRING "The hostname of a running PostgreSQL instance")
+#set(TEST_PGUSER
+#    macuser
+#    CACHE STRING "The PostgreSQL test user")
+#set(TEST_DBNAME
+#    postgres
+#    CACHE STRING "The database name to use for tests")
+#set(TEST_PGPORT_TEMP_INSTANCE
+#    5432
+#    CACHE STRING "The port to run a temporary test PostgreSQL instance on")
 set(TEST_SCHEDULE ${CMAKE_CURRENT_BINARY_DIR}/test_schedule)
 set(TEST_SCHEDULE_SHARED
     ${CMAKE_CURRENT_BINARY_DIR}/shared/test_schedule_shared)
@@ -80,6 +95,7 @@ set(PG_REGRESS_OPTS_EXTRA
 set(PG_REGRESS_SHARED_OPTS_EXTRA
     --create-role=${TEST_ROLE_DEFAULT_PERM_USER},${TEST_ROLE_DEFAULT_PERM_USER_2}
     --dbname=${TEST_DBNAME}
+    --user=${TEST_PGUSER}
     --launcher=${PRIMARY_TEST_DIR}/runner_shared.sh)
 
 set(PG_ISOLATION_REGRESS_OPTS_EXTRA
@@ -107,6 +123,8 @@ set(PG_REGRESS_OPTS_TEMP_INSTANCE_PGTEST
     --temp-config=${TEST_OUTPUT_DIR}/pgtest.conf)
 
 set(PG_REGRESS_OPTS_LOCAL_INSTANCE --port=${TEST_PGPORT_LOCAL})
+
+set(PG_REGRESS_USE_EXISTING_DB --use-existing)
 
 if(PG_REGRESS)
   set(PG_REGRESS_ENV
