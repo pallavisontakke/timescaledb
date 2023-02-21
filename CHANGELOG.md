@@ -6,7 +6,12 @@ accidentally triggering the load of a previous DB version.**
 
 ## Unreleased
 
+**Bugfixes**
 * #5336 Use NameData and namestrcpy for names
+* #5317 Fix some incorrect memory handling
+
+**Thanks**
+* @Medvecrab for discovering an issue with copying NameData when forming heap tuples.
 
 ## 2.10.0 (2023-02-21)
 
@@ -35,6 +40,7 @@ Sooner to that time, we will announce the specific version of TimescaleDB in whi
 * #5246 Make connection establishment interruptible
 * #5253 Make data node command execution interruptible
 * #5262 Extend enabling compression on a continuous aggregrate with 'compress_segmentby' and 'compress_orderby' parameters
+* #5343 Set PortalContext when starting job
 
 **Bugfixes**
 * #5214 Fix use of prepared statement in async module
@@ -44,6 +50,9 @@ Sooner to that time, we will announce the specific version of TimescaleDB in whi
 
 **Thanks**
 * @henriquegelio for reporting the issue on fixed schedules
+
+**Thanks**
+* @justinozavala for reporting an issue with PL/Python procedures in the background worker
 
 ## 2.9.3 (2023-02-03)
 
