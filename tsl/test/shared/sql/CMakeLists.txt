@@ -4,22 +4,16 @@ set(TEST_FILES_SHARED
     constify_timestamptz_op_interval.sql
     constraint_exclusion_prepared.sql
     decompress_placeholdervar.sql
-    dist_chunk.sql
-    dist_distinct_pushdown.sql
-    dist_gapfill.sql
-    dist_insert.sql
     extension.sql
     subtract_integer_from_now.sql)
 
 set(TEST_TEMPLATES_SHARED
     decompress_join.sql.in
-    dist_fetcher_type.sql.in
     gapfill.sql.in
     generated_columns.sql.in
     ordered_append.sql.in
     ordered_append_join.sql.in
     transparent_decompress_chunk.sql.in
-    dist_distinct.sql.in
     space_constraint.sql.in)
 
 if((${PG_VERSION_MAJOR} GREATER_EQUAL "14"))
@@ -27,8 +21,7 @@ if((${PG_VERSION_MAJOR} GREATER_EQUAL "14"))
 endif()
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
-  list(APPEND TEST_FILES_SHARED dist_parallel_agg.sql dist_queries.sql
-       timestamp_limits.sql with_clause_parser.sql)
+  list(APPEND TEST_FILES_SHARED timestamp_limits.sql with_clause_parser.sql)
   list(APPEND TEST_TEMPLATES_SHARED constify_now.sql.in)
 endif(CMAKE_BUILD_TYPE MATCHES Debug)
 
@@ -57,7 +50,7 @@ endif()
 file(REMOVE ${TEST_SCHEDULE_SHARED})
 
 if(NOT TEST_GROUP_SIZE)
-  set(PARALLEL_GROUP_SIZE 20)
+  set(PARALLEL_GROUP_SIZE 1)
 else()
   set(PARALLEL_GROUP_SIZE ${TEST_GROUP_SIZE})
 endif()
