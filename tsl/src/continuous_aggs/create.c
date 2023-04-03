@@ -46,6 +46,7 @@
 #include <parser/parse_oper.h>
 #include <parser/parse_relation.h>
 #include <parser/parse_type.h>
+#include <parser/parsetree.h>
 #include <rewrite/rewriteHandler.h>
 #include <rewrite/rewriteManip.h>
 #include <utils/acl.h>
@@ -60,8 +61,11 @@
 
 #include "create.h"
 
+#include "debug_assert.h"
 #include "ts_catalog/catalog.h"
 #include "ts_catalog/continuous_agg.h"
+#include "ts_catalog/continuous_aggs_watermark.h"
+#include "ts_catalog/hypertable_data_node.h"
 #include "dimension.h"
 #include "extension_constants.h"
 #include "func_cache.h"
@@ -69,14 +73,12 @@
 #include "hypertable.h"
 #include "invalidation.h"
 #include "dimension.h"
-#include "ts_catalog/continuous_agg.h"
 #include "options.h"
 #include "time_utils.h"
 #include "utils.h"
 #include "errors.h"
 #include "refresh.h"
 #include "remote/dist_commands.h"
-#include "ts_catalog/hypertable_data_node.h"
 #include "deparse.h"
 #include "timezones.h"
 
@@ -205,7 +207,7 @@ static Var *mattablecolumninfo_addentry(MatTableColumnInfo *out, Node *input,
 static void mattablecolumninfo_addinternal(MatTableColumnInfo *matcolinfo);
 static int32 mattablecolumninfo_create_materialization_table(
 	MatTableColumnInfo *matcolinfo, int32 hypertable_id, RangeVar *mat_rel,
-	CAggTimebucketInfo *origquery_tblinfo, bool create_addl_index, char *tablespacename,
+	CAggTimebucketInfo *bucket_info, bool create_addl_index, char *tablespacename,
 	char *table_access_method, ObjectAddress *mataddress);
 static Query *mattablecolumninfo_get_partial_select_query(MatTableColumnInfo *mattblinfo,
 														  Query *userview_query, bool finalized);
@@ -549,8 +551,8 @@ mattablecolumninfo_add_mattable_index(MatTableColumnInfo *matcolinfo, Hypertable
  *
  *  Parameters:
  *    mat_rel: relation information for the materialization table
- *    origquery_tblinfo: - user query's tbale information. used for setting up
- *        thr partitioning of the hypertable.
+ *    bucket_info: bucket information used for setting up the
+ *                 hypertable partitioning (`chunk_interval_size`).
  *    tablespace_name: Name of the tablespace for the materialization table.
  *    table_access_method: Name of the table access method to use for the
  *        materialization table.
@@ -559,8 +561,7 @@ mattablecolumninfo_add_mattable_index(MatTableColumnInfo *matcolinfo, Hypertable
  */
 static int32
 mattablecolumninfo_create_materialization_table(MatTableColumnInfo *matcolinfo, int32 hypertable_id,
-												RangeVar *mat_rel,
-												CAggTimebucketInfo *origquery_tblinfo,
+												RangeVar *mat_rel, CAggTimebucketInfo *bucket_info,
 												bool create_addl_index, char *const tablespacename,
 												char *const table_access_method,
 												ObjectAddress *mataddress)
@@ -604,7 +605,12 @@ mattablecolumninfo_create_materialization_table(MatTableColumnInfo *matcolinfo, 
 	RESTORE_USER(uid, saved_uid, sec_ctx);
 
 	/* Convert the materialization table to a hypertable. */
-	matpartcol_interval = MATPARTCOL_INTERVAL_FACTOR * (origquery_tblinfo->htpartcol_interval_len);
+	matpartcol_interval = bucket_info->htpartcol_interval_len;
+
+	/* Apply the factor just for non-Hierachical CAggs */
+	if (bucket_info->parent_mat_hypertable_id == INVALID_HYPERTABLE_ID)
+		matpartcol_interval *= MATPARTCOL_INTERVAL_FACTOR;
+
 	cagg_create_hypertable(hypertable_id, mat_relid, matpartcolname, matpartcol_interval);
 
 	/* Retrieve the hypertable id from the cache. */
@@ -621,7 +627,7 @@ mattablecolumninfo_create_materialization_table(MatTableColumnInfo *matcolinfo, 
 	 * aggregate. This is the initial state of the aggregate before any
 	 * refreshes.
 	 */
-	orig_ht = ts_hypertable_cache_get_entry(hcache, origquery_tblinfo->htoid, CACHE_FLAG_NONE);
+	orig_ht = ts_hypertable_cache_get_entry(hcache, bucket_info->htoid, CACHE_FLAG_NONE);
 	continuous_agg_invalidate_mat_ht(orig_ht, mat_ht, TS_TIME_NOBEGIN, TS_TIME_NOEND);
 	ts_cache_release(hcache);
 	return mat_htid;
@@ -758,6 +764,7 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 	ListCell *l;
 	bool found = false;
 	bool custom_origin = false;
+	Const *const_arg;
 
 	/* Make sure tbinfo was initialized. This assumption is used below. */
 	Assert(tbinfo->bucket_width == 0);
@@ -798,6 +805,9 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 
 			/* Only column allowed : time_bucket('1day', <column> ) */
 			col_arg = lsecond(fe->args);
+			/* Could be a named argument */
+			if (IsA(col_arg, NamedArgExpr))
+				col_arg = (Node *) castNode(NamedArgExpr, col_arg)->arg;
 
 			if (!(IsA(col_arg, Var)) || ((Var *) col_arg)->varattno != tbinfo->htpartcolno)
 				ereport(ERROR,
@@ -825,6 +835,7 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 
 			if (list_length(fe->args) >= 4)
 			{
+				/* origin */
 				Const *arg = check_time_bucket_argument(lfourth(fe->args), "fourth");
 				if (exprType((Node *) arg) == TEXTOID)
 				{
@@ -848,19 +859,22 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 					/* Origin is always 3rd arg for date variants. */
 					if (list_length(fe->args) == 3)
 					{
+						Node *arg = lthird(fe->args);
 						custom_origin = true;
+						/* this function also takes care of named arguments */
+						const_arg = check_time_bucket_argument(arg, "third");
 						tbinfo->origin = DatumGetTimestamp(
-							DirectFunctionCall1(date_timestamp,
-												castNode(Const, lthird(fe->args))->constvalue));
+							DirectFunctionCall1(date_timestamp, const_arg->constvalue));
 					}
 					break;
 				case TIMESTAMPOID:
 					/* Origin is always 3rd arg for timestamp variants. */
 					if (list_length(fe->args) == 3)
 					{
+						Node *arg = lthird(fe->args);
 						custom_origin = true;
-						tbinfo->origin =
-							DatumGetTimestamp(castNode(Const, lthird(fe->args))->constvalue);
+						const_arg = check_time_bucket_argument(arg, "third");
+						tbinfo->origin = DatumGetTimestamp(const_arg->constvalue);
 					}
 					break;
 				case TIMESTAMPTZOID:
@@ -875,8 +889,20 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 							 exprType(lfourth(fe->args)) == TIMESTAMPTZOID)
 					{
 						custom_origin = true;
-						tbinfo->origin =
-							DatumGetTimestampTz(castNode(Const, lfourth(fe->args))->constvalue);
+						if (IsA(lfourth(fe->args), Const))
+						{
+							tbinfo->origin =
+								DatumGetTimestampTz(castNode(Const, lfourth(fe->args))->constvalue);
+						}
+						/* could happen in a statement like time_bucket('1h', .., 'utc', origin =>
+						 * ...) */
+						else if (IsA(lfourth(fe->args), NamedArgExpr))
+						{
+							Const *constval =
+								check_time_bucket_argument(lfourth(fe->args), "fourth");
+
+							tbinfo->origin = DatumGetTimestampTz(constval->constvalue);
+						}
 					}
 			}
 			if (custom_origin && TIMESTAMP_NOT_FINITE(tbinfo->origin))
@@ -892,7 +918,12 @@ caggtimebucket_validate(CAggTimebucketInfo *tbinfo, List *groupClause, List *tar
 			 * partitioning column as int constants default to int4 and so expression would
 			 * have a cast and not be a Const.
 			 */
-			width_arg = eval_const_expressions(NULL, linitial(fe->args));
+			width_arg = linitial(fe->args);
+
+			if (IsA(width_arg, NamedArgExpr))
+				width_arg = (Node *) castNode(NamedArgExpr, width_arg)->arg;
+
+			width_arg = eval_const_expressions(NULL, width_arg);
 			if (IsA(width_arg, Const))
 			{
 				Const *width = castNode(Const, width_arg);
@@ -1019,7 +1050,11 @@ cagg_query_supported(const Query *query, StringInfo hint, StringInfo detail, con
 	}
 #endif
 #endif
-
+	if (!query->jointree->fromlist)
+	{
+		appendStringInfoString(hint, "FROM clause missing in the query");
+		return false;
+	}
 	if (query->commandType != CMD_SELECT)
 	{
 		appendStringInfoString(hint, "Use a SELECT query in the continuous aggregate view.");
@@ -1147,11 +1182,10 @@ get_bucket_width(CAggTimebucketInfo bucket_info)
 				bucket_info.interval->day = bucket_info.interval->month * DAYS_PER_MONTH;
 				bucket_info.interval->month = 0;
 			}
-			Datum epoch = DirectFunctionCall2(interval_part,
-											  PointerGetDatum(cstring_to_text("epoch")),
-											  IntervalPGetDatum(bucket_info.interval));
-			/* Cast float8 to int8. */
-			width = DatumGetInt64(DirectFunctionCall1(dtoi8, epoch));
+
+			/* Convert Interval to int64 */
+			width =
+				ts_interval_value_to_internal(IntervalPGetDatum(bucket_info.interval), INTERVALOID);
 			break;
 		}
 		default:
@@ -1280,31 +1314,42 @@ cagg_validate_query(const Query *query, const bool finalized, const char *cagg_s
 					op = (OpExpr *) join->quals;
 					rte = list_nth(query->rtable, ((RangeTblRef *) join->larg)->rtindex - 1);
 					rte_other = list_nth(query->rtable, ((RangeTblRef *) join->rarg)->rtindex - 1);
+					if (rte->subquery != NULL || rte_other->subquery != NULL)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("invalid continuous aggregate view"),
+								 errdetail("sub-queries are not supported in FROM clause")));
+					RangeTblEntry *jrte = rt_fetch(join->rtindex, query->rtable);
+					if (jrte->joinaliasvars == NIL)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("invalid continuous aggregate view")));
 				}
 			}
 		}
 
 		/*
-		 * Cagg with joins does not support hierarchical caggs in from clause.
+		 * Error out if there is aynthing else than one normal table and one hypertable
+		 * in the from clause, e.g. sub-query, lateral, two hypertables, etc.
 		 */
-		if (rte->relkind == RELKIND_VIEW || rte_other->relkind == RELKIND_VIEW)
+		if (rte->lateral || rte_other->lateral)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("joins for hierarchical continuous aggregates are not supported")));
-
-		/*
-		 * Error out if there is aynthing else than one normal table and one hypertable
-		 * in the from clause, e.g. sub-query.
-		 */
-		if (((rte->relkind != RELKIND_RELATION && rte->relkind != RELKIND_VIEW) ||
-			 rte->tablesample || rte->inh == false) ||
-			((rte_other->relkind != RELKIND_RELATION && rte_other->relkind != RELKIND_VIEW) ||
-			 rte_other->tablesample || rte_other->inh == false) ||
+					 errmsg("invalid continuous aggregate view"),
+					 errdetail("lateral are not supported in FROM clause")));
+		if ((rte->relkind == RELKIND_VIEW && ts_is_hypertable(rte_other->relid)) ||
+			(rte_other->relkind == RELKIND_VIEW && ts_is_hypertable(rte->relid)))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("invalid continuous aggregate view"),
+					 errdetail("views are not supported in FROM clause")));
+		if (rte->relkind != RELKIND_VIEW && rte_other->relkind != RELKIND_VIEW &&
 			(ts_is_hypertable(rte->relid) == ts_is_hypertable(rte_other->relid)))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("invalid continuous aggregate view"),
-					 errdetail("from clause can only have one hypertable and one normal table")));
+					 errdetail("multiple hypertables or normal tables"
+							   " are not supported in FROM clause")));
 
 		/* Only inner joins are allowed. */
 		if (jointype != JOIN_INNER)
@@ -1336,7 +1381,12 @@ cagg_validate_query(const Query *query, const bool finalized, const char *cagg_s
 		 * that we know which one is hypertable to carry out the related
 		 * processing in later parts of code.
 		 */
-		normal_table_id = ts_is_hypertable(rte->relid) ? rte_other->relid : rte->relid;
+		if (rte->relkind == RELKIND_VIEW)
+			normal_table_id = rte_other->relid;
+		else if (rte_other->relkind == RELKIND_VIEW)
+			normal_table_id = rte->relid;
+		else
+			normal_table_id = ts_is_hypertable(rte->relid) ? rte_other->relid : rte->relid;
 		if (normal_table_id == rte->relid)
 			rte = rte_other;
 	}
@@ -2446,7 +2496,9 @@ finalizequery_get_select_query(FinalizeQueryInfo *inp, List *matcollist,
 	 * which contains the information of the materialised hypertable
 	 * that is created for this cagg.
 	 */
-	if (list_length(inp->final_userquery->jointree->fromlist) >= CONTINUOUS_AGG_MAX_JOIN_RELATIONS)
+	if (list_length(inp->final_userquery->jointree->fromlist) >=
+			CONTINUOUS_AGG_MAX_JOIN_RELATIONS ||
+		!IsA(linitial(inp->final_userquery->jointree->fromlist), RangeTblRef))
 	{
 		rte = makeNode(RangeTblEntry);
 		rte->alias = makeAlias(relname, NIL);
@@ -2454,6 +2506,18 @@ finalizequery_get_select_query(FinalizeQueryInfo *inp, List *matcollist,
 		rte->inh = true;
 		rte->rellockmode = 1;
 		rte->eref = copyObject(rte->alias);
+		ListCell *l;
+		foreach (l, inp->final_userquery->jointree->fromlist)
+		{
+			Node *jtnode = (Node *) lfirst(l);
+			JoinExpr *join = NULL;
+			if (IsA(jtnode, JoinExpr))
+			{
+				join = castNode(JoinExpr, jtnode);
+				RangeTblEntry *jrte = rt_fetch(join->rtindex, inp->final_userquery->rtable);
+				rte->joinaliasvars = jrte->joinaliasvars;
+			}
+		}
 	}
 	else
 		rte = llast_node(RangeTblEntry, inp->final_userquery->rtable);
@@ -2615,7 +2679,7 @@ fixup_userview_query_tlist(Query *userquery, List *tlist_aliases)
  */
 static void
 cagg_create(const CreateTableAsStmt *create_stmt, ViewStmt *stmt, Query *panquery,
-			CAggTimebucketInfo *origquery_ht, WithClauseResult *with_clause_options)
+			CAggTimebucketInfo *bucket_info, WithClauseResult *with_clause_options)
 {
 	ObjectAddress mataddress;
 	char relnamebuf[NAMEDATALEN];
@@ -2668,7 +2732,7 @@ cagg_create(const CreateTableAsStmt *create_stmt, ViewStmt *stmt, Query *panquer
 	mattablecolumninfo_create_materialization_table(&mattblinfo,
 													materialize_hypertable_id,
 													mat_rel,
-													origquery_ht,
+													bucket_info,
 													is_create_mattbl_index,
 													create_stmt->into->tableSpaceName,
 													create_stmt->into->accessMethod,
@@ -2682,7 +2746,7 @@ cagg_create(const CreateTableAsStmt *create_stmt, ViewStmt *stmt, Query *panquer
 													mat_rel->relname);
 
 	if (!materialized_only)
-		final_selquery = build_union_query(origquery_ht,
+		final_selquery = build_union_query(bucket_info,
 										   mattblinfo.matpartcolno,
 										   final_selquery,
 										   panquery,
@@ -2719,19 +2783,19 @@ cagg_create(const CreateTableAsStmt *create_stmt, ViewStmt *stmt, Query *panquer
 	nspid = RangeVarGetCreationNamespace(stmt->view);
 
 	create_cagg_catalog_entry(materialize_hypertable_id,
-							  origquery_ht->htid,
+							  bucket_info->htid,
 							  get_namespace_name(nspid), /*schema name for user view */
 							  stmt->view->relname,
 							  part_rel->schemaname,
 							  part_rel->relname,
-							  origquery_ht->bucket_width,
+							  bucket_info->bucket_width,
 							  materialized_only,
 							  dum_rel->schemaname,
 							  dum_rel->relname,
 							  finalized,
-							  origquery_ht->parent_mat_hypertable_id);
+							  bucket_info->parent_mat_hypertable_id);
 
-	if (origquery_ht->bucket_width == BUCKET_WIDTH_VARIABLE)
+	if (bucket_info->bucket_width == BUCKET_WIDTH_VARIABLE)
 	{
 		const char *bucket_width;
 		const char *origin = "";
@@ -2739,14 +2803,14 @@ cagg_create(const CreateTableAsStmt *create_stmt, ViewStmt *stmt, Query *panquer
 		/*
 		 * Variable-sized buckets work only with intervals.
 		 */
-		Assert(origquery_ht->interval != NULL);
+		Assert(bucket_info->interval != NULL);
 		bucket_width = DatumGetCString(
-			DirectFunctionCall1(interval_out, IntervalPGetDatum(origquery_ht->interval)));
+			DirectFunctionCall1(interval_out, IntervalPGetDatum(bucket_info->interval)));
 
-		if (!TIMESTAMP_NOT_FINITE(origquery_ht->origin))
+		if (!TIMESTAMP_NOT_FINITE(bucket_info->origin))
 		{
 			origin = DatumGetCString(
-				DirectFunctionCall1(timestamp_out, TimestampGetDatum(origquery_ht->origin)));
+				DirectFunctionCall1(timestamp_out, TimestampGetDatum(bucket_info->origin)));
 		}
 
 		/*
@@ -2757,17 +2821,16 @@ cagg_create(const CreateTableAsStmt *create_stmt, ViewStmt *stmt, Query *panquer
 		 * that can be optimized later.
 		 */
 		create_bucket_function_catalog_entry(materialize_hypertable_id,
-											 get_func_namespace(
-												 origquery_ht->bucket_func->funcid) !=
+											 get_func_namespace(bucket_info->bucket_func->funcid) !=
 												 PG_PUBLIC_NAMESPACE,
-											 get_func_name(origquery_ht->bucket_func->funcid),
+											 get_func_name(bucket_info->bucket_func->funcid),
 											 bucket_width,
 											 origin,
-											 origquery_ht->timezone);
+											 bucket_info->timezone);
 	}
 
 	/* Step 5: Create trigger on raw hypertable -specified in the user view query. */
-	cagg_add_trigger_hypertable(origquery_ht->htoid, origquery_ht->htid);
+	cagg_add_trigger_hypertable(bucket_info->htoid, bucket_info->htid);
 }
 
 DDLResult
@@ -2785,9 +2848,15 @@ tsl_process_continuous_agg_viewstmt(Node *node, const char *query_string, void *
 		.options = stmt->into->options,
 		.aliases = stmt->into->colNames,
 	};
+	ContinuousAgg *cagg;
+	Hypertable *mat_ht;
+	Oid relid;
+	char *schema_name;
 
 	nspid = RangeVarGetCreationNamespace(stmt->into->rel);
-	if (get_relname_relid(stmt->into->rel->relname, nspid))
+	relid = get_relname_relid(stmt->into->rel->relname, nspid);
+
+	if (OidIsValid(relid))
 	{
 		if (stmt->if_not_exists)
 		{
@@ -2806,6 +2875,7 @@ tsl_process_continuous_agg_viewstmt(Node *node, const char *query_string, void *
 							 " first or use another name.")));
 		}
 	}
+
 	if (!with_clause_options[ContinuousViewOptionCompress].is_default)
 	{
 		ereport(ERROR,
@@ -2814,21 +2884,38 @@ tsl_process_continuous_agg_viewstmt(Node *node, const char *query_string, void *
 				 errhint("Use ALTER MATERIALIZED VIEW to enable compression.")));
 	}
 
+	schema_name = get_namespace_name(nspid);
 	timebucket_exprinfo = cagg_validate_query((Query *) stmt->into->viewQuery,
 											  finalized,
-											  get_namespace_name(nspid),
+											  schema_name,
 											  stmt->into->rel->relname);
 	cagg_create(stmt, &viewstmt, (Query *) stmt->query, &timebucket_exprinfo, with_clause_options);
 
+	/* Insert the MIN of the time dimension type for the new watermark */
+	CommandCounterIncrement();
+
+	relid = get_relname_relid(stmt->into->rel->relname, nspid);
+	Ensure(OidIsValid(relid),
+		   "relation \"%s\".\"%s\" not found",
+		   schema_name,
+		   stmt->into->rel->relname);
+
+	cagg = ts_continuous_agg_find_by_relid(relid);
+	Ensure(NULL != cagg,
+		   "continuous aggregate \"%s\".\"%s\" not found",
+		   schema_name,
+		   stmt->into->rel->relname);
+
+	mat_ht = ts_hypertable_get_by_id(cagg->data.mat_hypertable_id);
+	Ensure(NULL != mat_ht, "materialization hypertable %d not found", cagg->data.mat_hypertable_id);
+
+	ts_cagg_watermark_insert(mat_ht, 0, true);
+
 	if (!stmt->into->skipData)
 	{
-		Oid relid;
-		ContinuousAgg *cagg;
 		InternalTimeRange refresh_window = {
 			.type = InvalidOid,
 		};
-
-		CommandCounterIncrement();
 
 		/*
 		 * We are creating a refresh window here in a similar way to how it's
@@ -2837,10 +2924,8 @@ tsl_process_continuous_agg_viewstmt(Node *node, const char *query_string, void *
 		 * function and adding a 'verbose' parameter to is not useful for a
 		 * user.
 		 */
-		relid = get_relname_relid(stmt->into->rel->relname, nspid);
-		cagg = ts_continuous_agg_find_by_relid(relid);
-		Assert(cagg != NULL);
 		refresh_window.type = cagg->partition_type;
+
 		/*
 		 * To determine inscribed/circumscribed refresh window for variable-sized
 		 * buckets we should be able to calculate time_bucket(window.begin) and
@@ -2861,6 +2946,7 @@ tsl_process_continuous_agg_viewstmt(Node *node, const char *query_string, void *
 
 		continuous_agg_refresh_internal(cagg, &refresh_window, CAGG_REFRESH_CREATION, true, true);
 	}
+
 	return DDL_DONE;
 }
 
@@ -3385,12 +3471,17 @@ build_union_query(CAggTimebucketInfo *tbinfo, int matpartcolno, Query *q1, Query
 	 */
 	if (list_length(q2->rtable) == CONTINUOUS_AGG_MAX_JOIN_RELATIONS)
 	{
+		Oid normal_table_id = InvalidOid;
 		RangeTblRef *rtref = linitial_node(RangeTblRef, q2->jointree->fromlist);
 		RangeTblEntry *rte = list_nth(q2->rtable, rtref->rtindex - 1);
 		RangeTblRef *rtref_other = lsecond_node(RangeTblRef, q2->jointree->fromlist);
 		RangeTblEntry *rte_other = list_nth(q2->rtable, rtref_other->rtindex - 1);
-
-		Oid normal_table_id = ts_is_hypertable(rte->relid) ? rte_other->relid : rte->relid;
+		if (rte->relkind == RELKIND_VIEW)
+			normal_table_id = rte_other->relid;
+		else if (rte_other->relkind == RELKIND_VIEW)
+			normal_table_id = rte->relid;
+		else
+			normal_table_id = ts_is_hypertable(rte->relid) ? rte_other->relid : rte->relid;
 		if (normal_table_id == rte->relid)
 			varno = 2;
 		else

@@ -57,6 +57,7 @@ typedef enum CatalogTable
 	CHUNK_COPY_OPERATION,
 	CONTINUOUS_AGGS_BUCKET_FUNCTION,
 	JOB_ERRORS,
+	CONTINUOUS_AGGS_WATERMARK,
 	/* Don't forget updating catalog.c when adding new tables! */
 	_MAX_CATALOG_TABLES,
 } CatalogTable;
@@ -1172,6 +1173,39 @@ typedef enum Anum_continuous_aggs_materialization_invalidation_log_idx
 #define Natts_continuous_aggs_materialization_invalidation_log_idx                                 \
 	(_Anum_continuous_aggs_materialization_invalidation_log_idx_max - 1)
 
+/****** CONTINUOUS_AGGS_WATERMARK_TABLE definitions*/
+#define CONTINUOUS_AGGS_WATERMARK_TABLE_NAME "continuous_aggs_watermark"
+typedef enum Anum_continuous_aggs_watermark
+{
+	Anum_continuous_aggs_watermark_mat_hypertable_id = 1,
+	Anum_continuous_aggs_watermark_watermark,
+	_Anum_continuous_aggs_watermark_max,
+} Anum_continuous_aggs_watermark;
+
+#define Natts_continuous_aggs_watermark (_Anum_continuous_aggs_watermark_max - 1)
+
+typedef struct FormData_continuous_aggs_watermark
+{
+	int32 mat_hypertable_id;
+	int64 watermark;
+} FormData_continuous_aggs_watermark;
+
+typedef FormData_continuous_aggs_watermark *Form_continuous_aggs_watermark;
+
+enum
+{
+	CONTINUOUS_AGGS_WATERMARK_PKEY = 0,
+	_MAX_CONTINUOUS_AGGS_WATERMARK_INDEX,
+};
+
+typedef enum Anum_continuous_aggs_watermark_pkey
+{
+	Anum_continuous_aggs_watermark_pkey_mat_hypertable_id = 1,
+	_Anum_continuous_aggs_watermark_pkey_max,
+} Anum_continuous_aggs_watermark_pkey;
+
+#define Natts_continuous_aggs_watermark_pkey (_Anum_continuous_aggs_watermark_pkey_max - 1)
+
 #define HYPERTABLE_COMPRESSION_TABLE_NAME "hypertable_compression"
 typedef enum Anum_hypertable_compression
 {
@@ -1472,9 +1506,10 @@ extern TSDLLEXPORT void ts_catalog_update_tid(Relation rel, ItemPointer tid, Hea
 extern TSDLLEXPORT void ts_catalog_update(Relation rel, HeapTuple tuple);
 extern TSDLLEXPORT void ts_catalog_delete_tid_only(Relation rel, ItemPointer tid);
 extern TSDLLEXPORT void ts_catalog_delete_tid(Relation rel, ItemPointer tid);
-extern TSDLLEXPORT void ts_catalog_delete_only(Relation rel, HeapTuple tuple);
-extern TSDLLEXPORT void ts_catalog_delete(Relation rel, HeapTuple tuple);
 extern TSDLLEXPORT void ts_catalog_invalidate_cache(Oid catalog_relid, CmdType operation);
+extern TSDLLEXPORT ResultRelInfo *ts_catalog_open_indexes(Relation heapRel);
+extern TSDLLEXPORT void ts_catalog_close_indexes(ResultRelInfo *indstate);
+extern TSDLLEXPORT void ts_catalog_index_insert(ResultRelInfo *indstate, HeapTuple heapTuple);
 
 bool TSDLLEXPORT ts_catalog_scan_one(CatalogTable table, int indexid, ScanKeyData *scankey,
 									 int num_keys, tuple_found_func tuple_found, LOCKMODE lockmode,

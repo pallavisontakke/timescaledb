@@ -190,6 +190,18 @@ fill_simple_error(TSConnectionError *err, int errcode, const char *errmsg, const
 
 	err->errcode = errcode;
 	err->msg = errmsg;
+	if (err->msg == NULL || strlen(err->msg) == 0)
+	{
+		char *connection_message = PQerrorMessage(conn->pg_conn);
+		if (connection_message)
+		{
+			err->msg = pstrdup(connection_message);
+		}
+		else
+		{
+			err->msg = "unknown error";
+		}
+	}
 	err->host = pstrdup(PQhost(conn->pg_conn));
 	err->nodename = pstrdup(remote_connection_node_name(conn));
 
@@ -324,8 +336,32 @@ fill_result_error(TSConnectionError *err, int errcode, const char *errmsg, const
 	err->remote.hint = get_error_field_copy(res, PG_DIAG_MESSAGE_HINT);
 	err->remote.context = get_error_field_copy(res, PG_DIAG_CONTEXT);
 	err->remote.stmtpos = get_error_field_copy(res, PG_DIAG_STATEMENT_POSITION);
-	if (err->remote.msg == NULL)
-		err->remote.msg = pstrdup(PQresultErrorMessage(res));
+	/*
+	 * Try to find at least some non-empty error message. The result error
+	 * message may be not set if a node segfaults.
+	 */
+	if (err->remote.msg == NULL || strlen(err->remote.msg) == 0)
+	{
+		char *result_message = PQresultErrorMessage(res);
+		if (result_message && strlen(result_message))
+		{
+			err->remote.msg = pstrdup(result_message);
+		}
+	}
+
+	if (err->remote.msg == NULL || strlen(err->remote.msg) == 0)
+	{
+		char *connection_message = PQerrorMessage(entry->conn->pg_conn);
+		if (connection_message && strlen(connection_message))
+		{
+			err->remote.msg = pstrdup(connection_message);
+		}
+	}
+
+	if (err->remote.msg == NULL || strlen(err->remote.msg) == 0)
+	{
+		err->remote.msg = "unknown error";
+	}
 
 	sqlstate = err->remote.sqlstate;
 
@@ -510,7 +546,7 @@ unset_libpq_envvar(void)
 	PQconninfoOption *lopt;
 	PQconninfoOption *options = PQconndefaults();
 
-	Assert(options != NULL);
+	TS_OOM_CHECK(options, "out of memory");
 
 	/* Explicitly unset all libpq environment variables.
 	 *
@@ -708,6 +744,11 @@ static const char *default_connection_options[] = {
 	"SET datestyle = ISO",
 	"SET intervalstyle = postgres",
 	"SET extra_float_digits = 3",
+	/*
+	 * Prepared statement data fetcher sets it to "force" which might be
+	 * suboptimal for other kinds of queries.
+	 */
+	"RESET plan_cache_mode",
 	"SET statement_timeout = 0",
 	NULL,
 };
@@ -910,13 +951,13 @@ remote_connection_node_name(const TSConnection *conn)
 void
 remote_connection_get_error(const TSConnection *conn, TSConnectionError *err)
 {
-	fill_connection_error(err, ERRCODE_CONNECTION_FAILURE, "", conn);
+	fill_connection_error(err, ERRCODE_CONNECTION_FAILURE, NULL, conn);
 }
 
 void
 remote_connection_get_result_error(const PGresult *res, TSConnectionError *err)
 {
-	fill_result_error(err, ERRCODE_CONNECTION_EXCEPTION, "", res);
+	fill_result_error(err, ERRCODE_CONNECTION_EXCEPTION, NULL, res);
 }
 
 static long
@@ -983,6 +1024,7 @@ remote_connection_get_result(const TSConnection *conn, TimestampTz endtime)
 				if (PQconsumeInput(conn->pg_conn) == 0)
 				{
 					pgres = PQmakeEmptyPGresult(conn->pg_conn, PGRES_FATAL_ERROR);
+					TS_OOM_CHECK(pgres, "out of memory");
 					PQfireResultCreateEvents(conn->pg_conn, pgres);
 					return pgres;
 				}
@@ -1061,6 +1103,7 @@ remote_connection_exec_timeout(TSConnection *conn, const char *cmd, TimestampTz 
 			if (ret == 0)
 			{
 				res = PQmakeEmptyPGresult(conn->pg_conn, PGRES_FATAL_ERROR);
+				TS_OOM_CHECK(res, "out of memory");
 				PQfireResultCreateEvents(conn->pg_conn, res);
 				return res;
 			}
@@ -2265,13 +2308,13 @@ remote_connection_begin_copy(TSConnection *conn, const char *copycmd, bool binar
 
 #ifndef NDEBUG
 	/* Set some variables for testing. */
-	const char *throw_after_option =
-		GetConfigOption("timescaledb.debug_broken_sendrecv_throw_after", true, false);
-	if (throw_after_option)
+	const char *error_after_option =
+		GetConfigOption("timescaledb.debug_broken_sendrecv_error_after", true, false);
+	if (error_after_option)
 	{
 		res = PQexec(pg_conn,
-					 psprintf("set timescaledb.debug_broken_sendrecv_throw_after = '%s';",
-							  throw_after_option));
+					 psprintf("set timescaledb.debug_broken_sendrecv_error_after = '%s';",
+							  error_after_option));
 		if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		{
 			remote_connection_get_result_error(res, err);
@@ -2481,7 +2524,6 @@ remote_connection_end_copy(TSConnection *conn, TSConnectionError *err)
 		}
 	}
 
-	Assert(res == NULL);
 	remote_connection_set_status(conn, CONN_IDLE);
 
 	return success;

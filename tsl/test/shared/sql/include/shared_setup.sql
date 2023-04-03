@@ -84,25 +84,25 @@ ORDER BY c.table_name DESC;
 RESET ROLE;
 
 -- Add data nodes
-SELECT * FROM add_data_node('data_node_1', host => 'localhost', database => 'data_node_1');
-SELECT * FROM add_data_node('data_node_2', host => 'localhost', database => 'data_node_2');
-SELECT * FROM add_data_node('data_node_3', host => 'localhost', database => 'data_node_3');
-GRANT USAGE ON FOREIGN SERVER data_node_1, data_node_2, data_node_3 TO PUBLIC;
+--SELECT * FROM add_data_node('data_node_1', host => 'localhost', database => 'data_node_1');
+--SELECT * FROM add_data_node('data_node_2', host => 'localhost', database => 'data_node_2');
+--SELECT * FROM add_data_node('data_node_3', host => 'localhost', database => 'data_node_3');
+--GRANT USAGE ON FOREIGN SERVER data_node_1, data_node_2, data_node_3 TO PUBLIC;
 GRANT CREATE ON SCHEMA public TO :ROLE_DEFAULT_PERM_USER;
 -- set artificially low fetch_size to test fetcher behavior
 ALTER FOREIGN DATA WRAPPER timescaledb_fdw OPTIONS (ADD fetch_size '10');
 -- Import testsupport.sql file to data nodes
 \unset ECHO
 \o /dev/null
-\c data_node_1
-SET client_min_messages TO ERROR;
-\ir :TEST_SUPPORT_FILE
-\c data_node_2
-SET client_min_messages TO ERROR;
-\ir :TEST_SUPPORT_FILE
-\c data_node_3
-SET client_min_messages TO ERROR;
-\ir :TEST_SUPPORT_FILE
+--\c data_node_1
+--SET client_min_messages TO ERROR;
+--\ir :TEST_SUPPORT_FILE
+--\c data_node_2
+--SET client_min_messages TO ERROR;
+--\ir :TEST_SUPPORT_FILE
+--\c data_node_3
+--SET client_min_messages TO ERROR;
+--\ir :TEST_SUPPORT_FILE
 \c :TEST_DBNAME
 SET client_min_messages TO ERROR;
 \ir :TEST_SUPPORT_FILE
@@ -207,37 +207,37 @@ INSERT INTO metrics_int_dist VALUES
     (100,1,1,0.0),
     (100,1,2,-100.0);
 
-CREATE TABLE conditions_dist1(
-    time timestamptz NOT NULL,
-    device int,
-    value float
-);
-SELECT * FROM create_distributed_hypertable('conditions_dist1', 'time', 'device', 1,
-    data_nodes => '{"data_node_1"}');
-INSERT INTO conditions_dist1 VALUES
-    ('2017-01-01 06:01', 1, 1.2),
-    ('2017-01-01 09:11', 3, 4.3),
-    ('2017-01-01 08:01', 1, 7.3),
-    ('2017-01-02 08:01', 2, 0.23),
-    ('2018-07-02 08:01', 87, 0.0),
-    ('2018-07-01 06:01', 13, 3.1),
-    ('2018-07-01 09:11', 90, 10303.12),
-    ('2018-07-01 08:01', 29, 64);
+--CREATE TABLE conditions_dist1(
+--    time timestamptz NOT NULL,
+--    device int,
+--    value float
+--);
+--SELECT * FROM create_distributed_hypertable('conditions_dist1', 'time', 'device', 1,
+--    data_nodes => '{"data_node_1"}');
+--INSERT INTO conditions_dist1 VALUES
+--    ('2017-01-01 06:01', 1, 1.2),
+--    ('2017-01-01 09:11', 3, 4.3),
+--    ('2017-01-01 08:01', 1, 7.3),
+--    ('2017-01-02 08:01', 2, 0.23),
+--    ('2018-07-02 08:01', 87, 0.0),
+--    ('2018-07-01 06:01', 13, 3.1),
+--    ('2018-07-01 09:11', 90, 10303.12),
+--    ('2018-07-01 08:01', 29, 64);
 
-CREATE TABLE metrics_int_dist1(
-    time int NOT NULL,
-    device_id int,
-    sensor_id int,
-    value float);
-SELECT create_distributed_hypertable('metrics_int_dist1', 'time', 'device_id', chunk_time_interval => 50,
-    data_nodes => '{"data_node_1"}');
-INSERT INTO metrics_int_dist1 VALUES
-    (-100,1,1,0.0),
-    (-100,1,2,-100.0),
-    (0,1,1,5.0),
-    (5,1,2,10.0),
-    (100,1,1,0.0),
-    (100,1,2,-100.0);
+--CREATE TABLE metrics_int_dist1(
+--    time int NOT NULL,
+--    device_id int,
+--    sensor_id int,
+--    value float);
+--SELECT create_distributed_hypertable('metrics_int_dist1', 'time', 'device_id', chunk_time_interval => 50,
+--    data_nodes => '{"data_node_1"}');
+--INSERT INTO metrics_int_dist1 VALUES
+--    (-100,1,1,0.0),
+--    (-100,1,2,-100.0),
+--    (0,1,1,5.0),
+--    (5,1,2,10.0),
+--    (100,1,1,0.0),
+--    (100,1,2,-100.0);
 
 -- Create distributed hypertable for copy chunk test. Need to have
 -- a space-dimension to have more predictible chunk placement.

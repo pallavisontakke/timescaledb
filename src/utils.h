@@ -40,6 +40,14 @@
 /* find the length of a statically sized array */
 #define TS_ARRAY_LEN(array) (sizeof(array) / sizeof(*array))
 
+/* Use condition to check if out of memory */
+#define TS_OOM_CHECK(COND, FMT, ...)                                                               \
+	do                                                                                             \
+	{                                                                                              \
+		if (!(COND))                                                                               \
+			ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg(FMT, ##__VA_ARGS__)));          \
+	} while (0)
+
 extern TSDLLEXPORT bool ts_type_is_int8_binary_compatible(Oid sourcetype);
 
 typedef enum TimevalInfinity
@@ -204,5 +212,7 @@ extern TSDLLEXPORT void ts_copy_relation_acl(const Oid source_relid, const Oid t
 											 const Oid owner_id);
 extern TSDLLEXPORT bool ts_data_node_is_available_by_server(const ForeignServer *server);
 extern TSDLLEXPORT bool ts_data_node_is_available(const char *node_name);
+
+extern TSDLLEXPORT AttrNumber ts_map_attno(Oid src_rel, Oid dst_rel, AttrNumber attno);
 
 #endif /* TIMESCALEDB_UTILS_H */

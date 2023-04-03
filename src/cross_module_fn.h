@@ -33,6 +33,7 @@
 typedef struct JsonbParseState JsonbParseState;
 typedef struct Hypertable Hypertable;
 typedef struct Chunk Chunk;
+typedef struct ChunkInsertState ChunkInsertState;
 typedef struct CopyChunkState CopyChunkState;
 
 typedef struct CrossModuleFunctions
@@ -136,6 +137,8 @@ typedef struct CrossModuleFunctions
 	PGFunction create_compressed_chunk;
 	PGFunction compress_chunk;
 	PGFunction decompress_chunk;
+	void (*decompress_batches_for_insert)(ChunkInsertState *state, Chunk *chunk,
+										  TupleTableSlot *slot);
 	/* The compression functions below are not installed in SQL as part of create extension;
 	 *  They are installed and tested during testing scripts. They are exposed in cross-module
 	 *  functions because they may be very useful for debugging customer problems if the sql
@@ -201,8 +204,9 @@ typedef struct CrossModuleFunctions
 	PGFunction chunk_freeze_chunk;
 	PGFunction chunk_unfreeze_chunk;
 	PGFunction chunks_drop_stale;
-	void (*update_compressed_chunk_relstats)(Oid uncompressed_relid, Oid compressed_relid);
 	PGFunction health_check;
+	PGFunction recompress_chunk_segmentwise;
+	PGFunction get_compressed_chunk_index_for_recompression;
 	void (*mn_get_foreign_join_paths)(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outerrel,
 									  RelOptInfo *innerrel, JoinType jointype,
 									  JoinPathExtraData *extra);

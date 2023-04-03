@@ -63,6 +63,7 @@
 #include "cross_module_fn.h"
 #include "scan_iterator.h"
 #include "debug_assert.h"
+#include "osm_callbacks.h"
 
 Oid
 ts_rel_get_owner(Oid relid)
@@ -624,6 +625,20 @@ hypertable_tuple_delete(TupleInfo *ti, void *data)
 		if (compressed_hypertable != NULL)
 			ts_hypertable_drop(compressed_hypertable, DROP_RESTRICT);
 	}
+
+#if PG14_GE
+	OsmCallbacks *callbacks = ts_get_osm_callbacks();
+
+	/* Invoke the OSM callback if set */
+	if (callbacks)
+	{
+		Name schema_name =
+			DatumGetName(slot_getattr(ti->slot, Anum_hypertable_schema_name, &isnull));
+		Name table_name = DatumGetName(slot_getattr(ti->slot, Anum_hypertable_table_name, &isnull));
+
+		callbacks->hypertable_drop_hook(NameStr(*schema_name), NameStr(*table_name));
+	}
+#endif
 
 	ts_catalog_database_info_become_owner(ts_catalog_database_info_get(), &sec_ctx);
 	ts_catalog_delete_tid(ti->scanrel, ts_scanner_get_tuple_tid(ti));
@@ -2887,7 +2902,7 @@ ts_hypertable_func_call_on_data_nodes(const Hypertable *ht, FunctionCallInfo fci
 /*
  * Get the max value of an open dimension.
  */
-Datum
+int64
 ts_hypertable_get_open_dim_max_value(const Hypertable *ht, int dimension_index, bool *isnull)
 {
 	StringInfo command;
@@ -2895,11 +2910,14 @@ ts_hypertable_get_open_dim_max_value(const Hypertable *ht, int dimension_index, 
 	int res;
 	bool max_isnull;
 	Datum maxdat;
+	Oid timetype;
 
 	dim = hyperspace_get_open_dimension(ht->space, dimension_index);
 
 	if (NULL == dim)
 		elog(ERROR, "invalid open dimension index %d", dimension_index);
+
+	timetype = ts_dimension_get_partition_type(dim);
 
 	/*
 	 * Query for the last bucket in the materialized hypertable.
@@ -2926,7 +2944,7 @@ ts_hypertable_get_open_dim_max_value(const Hypertable *ht, int dimension_index, 
 				 (errmsg("could not find the maximum time value for hypertable \"%s\"",
 						 get_rel_name(ht->main_table_relid)))));
 
-	Ensure(SPI_gettypeid(SPI_tuptable->tupdesc, 1) == ts_dimension_get_partition_type(dim),
+	Ensure(SPI_gettypeid(SPI_tuptable->tupdesc, 1) == timetype,
 		   "partition types for result (%d) and dimension (%d) do not match",
 		   SPI_gettypeid(SPI_tuptable->tupdesc, 1),
 		   ts_dimension_get_partition_type(dim));
@@ -2938,7 +2956,7 @@ ts_hypertable_get_open_dim_max_value(const Hypertable *ht, int dimension_index, 
 	if ((res = SPI_finish()) != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed: %s", SPI_result_code_string(res));
 
-	return maxdat;
+	return max_isnull ? ts_time_get_min(timetype) : ts_time_value_to_internal(maxdat, timetype);
 }
 
 bool

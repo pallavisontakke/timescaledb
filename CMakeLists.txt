@@ -8,6 +8,7 @@ include(GitCommands)
 include(GenerateScripts)
 include(CMakeDependentOption)
 
+option(APACHE_ONLY "only compile apache code" off)
 # This requires all tests to run. This defaults to OFF but can be enabled to
 # ensure that no tests are skipped because of missing tools.
 option(REQUIRE_ALL_TESTS "Require all tests to run." OFF)
@@ -386,6 +387,12 @@ set(EXT_CONTROL_FILE ${PROJECT_NAME}.control)
 if(${PG_VERSION_MAJOR} GREATER "12")
   set(TRUSTED trusted=true)
 endif()
+
+if(APACHE_ONLY)
+  set(LICENSE_EDITION "Apache 2 Edition")
+else()
+  set(LICENSE_EDITION "Community Edition")
+endif()
 configure_file(${EXT_CONTROL_FILE}.in ${EXT_CONTROL_FILE})
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${EXT_CONTROL_FILE}
@@ -504,18 +511,6 @@ if(NOT EXISTS ${PG_INCLUDEDIR}/pg_config.h)
   )
 endif()
 
-# This is currently only available in snapshot branches so we cannot use the
-# normal pg version check to determine availability.
-if(EXISTS ${PG_INCLUDEDIR_SERVER}/utils/rel.h)
-  file(READ ${PG_INCLUDEDIR_SERVER}/utils/rel.h PG_UTILS_REL_H)
-  string(REGEX MATCH "RelationGetSmgr" PG_HAVE_RELATION_GET_SMGR
-               ${PG_UTILS_REL_H})
-endif()
-
-if(PG_HAVE_RELATION_GET_SMGR)
-  add_compile_definitions(PG_HAVE_RELATION_GET_SMGR=1)
-endif()
-
 file(READ ${PG_INCLUDEDIR}/pg_config.h PG_CONFIG_H)
 string(REGEX MATCH "#define USE_ASSERT_CHECKING 1" PG_USE_ASSERT_CHECKING
              ${PG_CONFIG_H})
@@ -629,8 +624,6 @@ endif(UNIX)
 add_subdirectory(sql)
 add_subdirectory(test)
 add_subdirectory(src)
-
-option(APACHE_ONLY "only compile apache code" off)
 
 if(NOT APACHE_ONLY)
   add_subdirectory(tsl)

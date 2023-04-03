@@ -4,6 +4,7 @@
  * LICENSE-APACHE for a copy of the license.
  */
 #include <postgres.h>
+#include <access/xact.h>
 #include <nodes/nodes.h>
 #include <nodes/extensible.h>
 #include <nodes/makefuncs.h>
@@ -58,6 +59,7 @@ destroy_chunk_insert_state(void *cis)
  */
 extern ChunkInsertState *
 ts_chunk_dispatch_get_chunk_insert_state(ChunkDispatch *dispatch, Point *point,
+										 TupleTableSlot *slot,
 										 const on_chunk_changed_func on_chunk_changed, void *data)
 {
 	ChunkInsertState *cis;
@@ -91,6 +93,7 @@ ts_chunk_dispatch_get_chunk_insert_state(ChunkDispatch *dispatch, Point *point,
 		 * where the chunk already exists.
 		 */
 		bool found;
+		Assert(slot);
 		Chunk *chunk = ts_hypertable_find_chunk_for_point(dispatch->hypertable, point);
 
 #if PG14_GE
@@ -106,7 +109,12 @@ ts_chunk_dispatch_get_chunk_insert_state(ChunkDispatch *dispatch, Point *point,
 			chunk = ts_hypertable_create_chunk_for_point(dispatch->hypertable, point, &found);
 		}
 		else
+		{
 			found = true;
+		}
+
+		if (!chunk)
+			elog(ERROR, "no chunk found or created");
 
 		/* get the filtered list of "available" DNs for this chunk but only if it's replicated */
 		if (found && dispatch->hypertable->fd.replication_factor > 1)
@@ -126,11 +134,35 @@ ts_chunk_dispatch_get_chunk_insert_state(ChunkDispatch *dispatch, Point *point,
 			list_free(chunk_data_nodes);
 		}
 
-		if (!chunk)
-			elog(ERROR, "no chunk found or created");
-
 		cis = ts_chunk_insert_state_create(chunk, dispatch);
 		ts_subspace_store_add(dispatch->cache, chunk->cube, cis, destroy_chunk_insert_state);
+
+		if (found && ts_chunk_is_compressed(chunk) && !ts_chunk_is_distributed(chunk))
+		{
+			/*
+			 * If this is an INSERT into a compressed chunk with UNIQUE or
+			 * PRIMARY KEY constraints we need to make sure any batches that could
+			 * potentially lead to a conflict are in the decompressed chunk so
+			 * postgres can do proper constraint checking.
+			 */
+			if (ts_cm_functions->decompress_batches_for_insert)
+			{
+				ts_cm_functions->decompress_batches_for_insert(cis, chunk, slot);
+				OnConflictAction onconflict_action =
+					chunk_dispatch_get_on_conflict_action(dispatch);
+				/* mark rows visible */
+				if (onconflict_action == ONCONFLICT_UPDATE)
+					dispatch->estate->es_output_cid = GetCurrentCommandId(true);
+			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("functionality not supported under the current \"%s\" license. "
+								"Learn more at https://timescale.com/.",
+								ts_guc_license),
+						 errhint("To get access to all features, and the best time-series "
+								 "experience try out Timescale Cloud")));
+		}
 
 		MemoryContextSwitchTo(old_context);
 	}
@@ -308,6 +340,7 @@ chunk_dispatch_exec(CustomScanState *node)
 	/* Find or create the insert state matching the point */
 	cis = ts_chunk_dispatch_get_chunk_insert_state(dispatch,
 												   point,
+												   slot,
 												   on_chunk_insert_state_changed,
 												   state);
 

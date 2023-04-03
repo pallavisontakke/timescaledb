@@ -183,6 +183,7 @@ CrossModuleFunctions tsl_cm_functions = {
 	.process_rename_cmd = tsl_process_rename_cmd,
 	.compress_chunk = tsl_compress_chunk,
 	.decompress_chunk = tsl_decompress_chunk,
+	.decompress_batches_for_insert = decompress_batches_for_insert,
 
 	.data_node_add = data_node_add,
 	.data_node_delete = data_node_delete,
@@ -234,9 +235,11 @@ CrossModuleFunctions tsl_cm_functions = {
 	.chunk_create_replica_table = chunk_create_replica_table,
 	.hypertable_distributed_set_replication_factor = hypertable_set_replication_factor,
 	.cache_syscache_invalidate = cache_syscache_invalidate,
-	.update_compressed_chunk_relstats = update_compressed_chunk_relstats,
 	.health_check = ts_dist_health_check,
 	.mn_get_foreign_join_paths = tsl_mn_get_foreign_join_paths,
+	.recompress_chunk_segmentwise = tsl_recompress_chunk_segmentwise,
+	.get_compressed_chunk_index_for_recompression =
+		tsl_get_compressed_chunk_index_for_recompression,
 };
 
 static void
@@ -255,6 +258,7 @@ TS_FUNCTION_INFO_V1(ts_module_init);
 PGDLLEXPORT Datum
 ts_module_init(PG_FUNCTION_ARGS)
 {
+	bool register_proc_exit = PG_GETARG_BOOL(0);
 	ts_cm_functions = &tsl_cm_functions;
 
 	_continuous_aggs_cache_inval_init();
@@ -264,7 +268,8 @@ ts_module_init(PG_FUNCTION_ARGS)
 	_remote_dist_txn_init();
 	_tsl_process_utility_init();
 	/* Register a cleanup function to be called when the backend exits */
-	on_proc_exit(ts_module_cleanup_on_pg_exit, 0);
+	if (register_proc_exit)
+		on_proc_exit(ts_module_cleanup_on_pg_exit, 0);
 	PG_RETURN_BOOL(true);
 }
 

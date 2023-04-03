@@ -6,14 +6,58 @@ accidentally triggering the load of a previous DB version.**
 
 ## Unreleased
 
+**Features**
+* #5212 Allow pushdown of reference table joins
+* #5221 Improve Realtime Continuous Aggregate performance
+* #5312 Add timeout support to the ping_data_node()
+* #5361 Add parallel support for partialize_agg()
+* #5252 Improve unique constraint support on compressed hypertables
+* #5312 Add timeout support to ping_data_node()
+* #5454 Add support for ON CONFLICT DO UPDATE for compressed hypertables
+* #5344 Enable JOINS for Hierarchical Continuous Aggregates
+
 **Bugfixes**
-* #5364 Fix num_chunks inconsistency in hypertables view
-* #5362 Make copy fetcher more async
-* #5336 Use NameData and namestrcpy for names
-* #5317 Fix some incorrect memory handling
+* #5396 Fix SEGMENTBY columns predicates to be pushed down
+* #5410 Fix file trailer handling in the COPY fetcher
+* #5233 Out of on_proc_exit slots on guc license change
+* #5427 Handle user-defined FDW options properly
+* #5428 Use consistent snapshots when scanning metadata
+* #5442 Decompression may have lost DEFAULT values
+* #5446 Add checks for malloc failure in libpq calls
+* #5470 Ensure superuser perms during copy/move chunk
+* #5459 Fix issue creating dimensional constraints
+* #5499 Do not segfault on large histogram() parameters
+* #5497 Allow named time_bucket arguments in Cagg definition
+* #5500 Fix when no FROM clause in continuous aggregate definition
 
 **Thanks**
+* @nikolaps for reporting an issue with the COPY fetcher
+* @S-imo-n for reporting the issue on Background Worker Scheduler crash
+* @kovetskiy and @DZDomi for reporting peformance regression in Realtime Continuous Aggregates
+* @geezhu for reporting issue on segfault in historgram()
+
+## 2.10.1 (2023-03-07)
+
+This release contains bug fixes since the 2.10.0 release.
+We recommend that you upgrade at the next available opportunity.
+
+**Bugfixes**
+* #5159 Support Continuous Aggregates names in hypertable_(detailed_)size
+* #5226 Fix concurrent locking with chunk_data_node table
+* #5317 Fix some incorrect memory handling
+* #5336 Use NameData and namestrcpy for names
+* #5343 Set PortalContext when starting job
+* #5360 Fix uninitialized bucket_info variable
+* #5362 Make copy fetcher more async
+* #5364 Fix num_chunks inconsistency in hypertables view
+* #5367 Fix column name handling in old-style continuous aggregates
+* #5378 Fix multinode DML HA performance regression
+* #5304 Fix sub-second intervals in hierarchical caggs
+
+**Thanks**
+* @justinozavala for reporting an issue with PL/Python procedures in the background worker
 * @Medvecrab for discovering an issue with copying NameData when forming heap tuples.
+* @pushpeepkmonroe for discovering an issue in upgrading old-style continuous aggregates with renamed columns
 
 ## 2.10.0 (2023-02-21)
 
@@ -44,9 +88,13 @@ Sooner to that time, we will announce the specific version of TimescaleDB in whi
 * #5262 Extend enabling compression on a continuous aggregrate with 'compress_segmentby' and 'compress_orderby' parameters
 * #5343 Set PortalContext when starting job
 * #5312 Add timeout support to the ping_data_node()
-* #5212 Allow pushdown of reference table joins 
+* #5212 Allow pushdown of reference table joins
+* #5344 Enable JOINS for Hierarchical continuous aggregates
 
 **Bugfixes**
+* #4926 Fix corruption when inserting into compressed chunks
+* #5118 Enable auto vacuum for uncompressed chunks
+* #5218 Add role-level security to job error log
 * #5214 Fix use of prepared statement in async module
 * #5218 Add role-level security to job error log
 * #5239 Fix next_start calculation for fixed schedules
@@ -54,9 +102,6 @@ Sooner to that time, we will announce the specific version of TimescaleDB in whi
 
 **Thanks**
 * @henriquegelio for reporting the issue on fixed schedules
-
-**Thanks**
-* @justinozavala for reporting an issue with PL/Python procedures in the background worker
 
 ## 2.9.3 (2023-02-03)
 
@@ -2759,4 +2804,3 @@ the next release.
 * [72f754a] use PostgreSQL's own `hash_any` function as default partfunc (thanks @robin900)
 * [39f4c0f] Remove sample data instructions and point to docs site
 * [9015314] Revised the `get_general_index_definition` function to handle cases where indexes have definitions other than just `CREATE INDEX` (thanks @bricklen)
-

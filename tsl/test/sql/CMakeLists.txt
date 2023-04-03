@@ -13,6 +13,7 @@ set(TEST_FILES
     cagg_watermark.sql
     compressed_collation.sql
     compression_bgw.sql
+    compression_conflicts.sql
     compression_permissions.sql
     compression_qualpushdown.sql
     dist_param.sql
@@ -63,6 +64,8 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     cagg_multi.sql
     cagg_on_cagg.sql
     cagg_on_cagg_dist_ht.sql
+    cagg_on_cagg_joins.sql
+    cagg_on_cagg_joins_dist_ht.sql
     continuous_aggs_deprecated.sql
     cagg_tableam.sql
     cagg_usage.sql
@@ -98,7 +101,8 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     transparent_decompression_queries.sql
     tsl_tables.sql
     license_tsl.sql
-    fixed_schedules.sql)
+    fixed_schedules.sql
+    recompress_chunk_segmentwise.sql)
 endif(CMAKE_BUILD_TYPE MATCHES Debug)
 
 if((${PG_VERSION_MAJOR} GREATER_EQUAL "14"))
@@ -158,6 +162,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     remote_copy.sql.in
     dist_grant.sql.in
     dist_ref_table_join.sql.in
+    dist_remote_error.sql.in
     dist_partial_agg.sql.in
     dist_query.sql.in
     cagg_invalidation_dist_ht.sql.in

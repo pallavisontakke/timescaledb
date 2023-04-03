@@ -163,8 +163,9 @@ where ch1.compressed_chunk_id = ch2.id;
 select compress_chunk( '_timescaledb_internal._hyper_1_2_chunk');
 ERROR:  chunk "_hyper_1_2_chunk" is already compressed
 --TEST2a try DML on a compressed chunk
+BEGIN;
 insert into foo values( 11 , 10 , 20, 120);
-ERROR:  insert into a compressed chunk that has primary or unique constraint is not supported
+ROLLBACK;
 update foo set b =20 where a = 10;
 ERROR:  cannot update/delete rows from chunk "_hyper_1_2_chunk" as it is compressed
 delete from foo where a = 10;
@@ -207,9 +208,26 @@ ERROR:  cannot update/delete rows from chunk "_hyper_1_1_chunk" as it is compres
 insert into foo values(10, 12, 12, 12)
 on conflict( a, b)
 do update set b = excluded.b;
-ERROR:  insert with ON CONFLICT clause is not supported on compressed chunks
+SELECT * from foo ORDER BY a,b;
+ a  |  b  | c  | d  
+----+-----+----+----
+ 10 |  12 | 12 | 12
+ 20 |  11 | 20 |   
+ 30 | 222 | 40 |   
+(3 rows)
+
 --TEST2c Do DML directly on the chunk.
-insert into _timescaledb_internal._hyper_1_2_chunk values(10, 12, 12, 12);
+insert into _timescaledb_internal._hyper_1_2_chunk values(10, 12, 12, 12)
+on conflict( a, b)
+do update set b = excluded.b + 12;
+SELECT * from foo ORDER BY a,b;
+ a  |  b  | c  | d  
+----+-----+----+----
+ 10 |  24 | 12 | 12
+ 20 |  11 | 20 |   
+ 30 | 222 | 40 |   
+(3 rows)
+
 update _timescaledb_internal._hyper_1_2_chunk
 set b = 12;
 ERROR:  cannot update/delete rows from chunk "_hyper_1_2_chunk" as it is compressed
@@ -225,16 +243,16 @@ select decompress_chunk( '_timescaledb_internal._hyper_1_2_chunk');
 insert into foo values( 11 , 10 , 20, 120);
 update foo set b =20 where a = 10;
 ERROR:  duplicate key value violates unique constraint "_hyper_1_2_chunk_foo_uniq"
-select * from _timescaledb_internal._hyper_1_2_chunk order by a;
+select * from _timescaledb_internal._hyper_1_2_chunk order by a,b;
  a  | b  | c  |  d  
 ----+----+----+-----
- 10 | 12 | 12 |  12
  10 | 10 | 20 |    
+ 10 | 24 | 12 |  12
  11 | 10 | 20 | 120
 (3 rows)
 
 delete from foo where a = 10;
-select * from _timescaledb_internal._hyper_1_2_chunk order by a;
+select * from _timescaledb_internal._hyper_1_2_chunk order by a,b;
  a  | b  | c  |  d  
 ----+----+----+-----
  11 | 10 | 20 | 120
@@ -1268,13 +1286,14 @@ SELECT compress_chunk(c) FROM show_chunks('stattest') c;
 SELECT approximate_row_count('stattest');
  approximate_row_count 
 -----------------------
-                    26
+                     0
 (1 row)
 
-SELECT relpages, reltuples FROM pg_class WHERE relname = :statchunk;
+-- reltuples is initially -1 on PG14 before VACUUM/ANALYZE was run
+SELECT relpages, CASE WHEN reltuples > 0 THEN reltuples ELSE 0 END as reltuples FROM pg_class WHERE relname = :statchunk;
  relpages | reltuples 
 ----------+-----------
-        1 |        26
+        0 |         0
 (1 row)
 
 SELECT histogram_bounds FROM pg_stats WHERE tablename = :statchunk AND attname = 'c1';
@@ -1309,17 +1328,19 @@ SELECT histogram_bounds FROM pg_stats WHERE tablename = 'stattest' AND attname =
 ------------------
 (0 rows)
 
-SELECT relpages, reltuples FROM pg_class WHERE relname = :statchunk;
+-- reltuples is initially -1 on PG14 before VACUUM/ANALYZE was run
+SELECT relpages, CASE WHEN reltuples > 0 THEN reltuples ELSE 0 END as reltuples FROM pg_class WHERE relname = :statchunk;
  relpages | reltuples 
 ----------+-----------
-        1 |        26
+        0 |         0
 (1 row)
 
 -- verify that corresponding compressed chunk's stats is updated as well.
-SELECT relpages, reltuples FROM pg_class WHERE relname = :'STAT_COMP_CHUNK_NAME';
+-- reltuples is initially -1 on PG14 before VACUUM/ANALYZE was run
+SELECT relpages, CASE WHEN reltuples > 0 THEN reltuples ELSE 0 END as reltuples FROM pg_class WHERE relname = :'STAT_COMP_CHUNK_NAME';
  relpages | reltuples 
 ----------+-----------
-        1 |         1
+        0 |         0
 (1 row)
 
 -- Verify that even a global analyze doesn't affect the chunk stats, changing message scope here
@@ -1336,14 +1357,14 @@ SELECT histogram_bounds FROM pg_stats WHERE tablename = :statchunk AND attname =
 SELECT relpages, reltuples FROM pg_class WHERE relname = :statchunk;
  relpages | reltuples 
 ----------+-----------
-        1 |        26
+        0 |         0
 (1 row)
 
 -- Verify that decompressing the chunk restores autoanalyze to the hypertable's setting
 SELECT reloptions FROM pg_class WHERE relname = :statchunk;
-         reloptions         
-----------------------------
- {autovacuum_enabled=false}
+ reloptions 
+------------
+ 
 (1 row)
 
 SELECT decompress_chunk(c) FROM show_chunks('stattest') c;
@@ -1353,9 +1374,9 @@ SELECT decompress_chunk(c) FROM show_chunks('stattest') c;
 (1 row)
 
 SELECT reloptions FROM pg_class WHERE relname = :statchunk;
-        reloptions         
----------------------------
- {autovacuum_enabled=true}
+ reloptions 
+------------
+ 
 (1 row)
 
 SELECT compress_chunk(c) FROM show_chunks('stattest') c;
@@ -1365,9 +1386,9 @@ SELECT compress_chunk(c) FROM show_chunks('stattest') c;
 (1 row)
 
 SELECT reloptions FROM pg_class WHERE relname = :statchunk;
-         reloptions         
-----------------------------
- {autovacuum_enabled=false}
+ reloptions 
+------------
+ 
 (1 row)
 
 ALTER TABLE stattest SET (autovacuum_enabled = false);
@@ -1412,7 +1433,7 @@ SELECT relname, CASE WHEN reltuples > 0 THEN reltuples ELSE 0 END AS reltuples, 
 order by relname;
       relname       | reltuples | relpages | relallvisible 
 --------------------+-----------+----------+---------------
- _hyper_29_58_chunk |       200 |        2 |             0
+ _hyper_29_58_chunk |         0 |        0 |             0
  _hyper_29_59_chunk |         0 |        0 |             0
 (2 rows)
 
@@ -1452,7 +1473,7 @@ SELECT relname, CASE WHEN reltuples > 0 THEN reltuples ELSE 0 END AS reltuples, 
 ORDER BY relname;
       relname       | reltuples | relpages | relallvisible 
 --------------------+-----------+----------+---------------
- _hyper_29_58_chunk |       200 |        1 |             0
+ _hyper_29_58_chunk |         0 |        0 |             0
  _hyper_29_59_chunk |         0 |        0 |             0
 (2 rows)
 
@@ -1475,7 +1496,7 @@ SELECT relname, reltuples, relpages, relallvisible FROM pg_class
 ORDER BY relname;
       relname       | reltuples | relpages | relallvisible 
 --------------------+-----------+----------+---------------
- _hyper_29_58_chunk |       200 |        1 |             0
+ _hyper_29_58_chunk |         0 |        0 |             0
  _hyper_29_59_chunk |       200 |        2 |             0
 (2 rows)
 
