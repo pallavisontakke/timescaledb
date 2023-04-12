@@ -15,6 +15,8 @@ accidentally triggering the load of a previous DB version.**
 * #5312 Add timeout support to ping_data_node()
 * #5454 Add support for ON CONFLICT DO UPDATE for compressed hypertables
 * #5344 Enable JOINS for Hierarchical Continuous Aggregates
+* #5417 Refactor and optimize distributed COPY
+* #5339 Support UPDATE/DELETE on compressed hypertables
 
 **Bugfixes**
 * #5396 Fix SEGMENTBY columns predicates to be pushed down
@@ -29,6 +31,7 @@ accidentally triggering the load of a previous DB version.**
 * #5499 Do not segfault on large histogram() parameters
 * #5497 Allow named time_bucket arguments in Cagg definition
 * #5500 Fix when no FROM clause in continuous aggregate definition
+* #5462 Fix segfault after column drop on compressed table
 
 **Thanks**
 * @nikolaps for reporting an issue with the COPY fetcher
