@@ -9,35 +9,47 @@ accidentally triggering the load of a previous DB version.**
 **Features**
 * #5212 Allow pushdown of reference table joins
 * #5221 Improve Realtime Continuous Aggregate performance
-* #5312 Add timeout support to the ping_data_node()
-* #5361 Add parallel support for partialize_agg()
 * #5252 Improve unique constraint support on compressed hypertables
 * #5312 Add timeout support to ping_data_node()
-* #5454 Add support for ON CONFLICT DO UPDATE for compressed hypertables
-* #5344 Enable JOINS for Hierarchical Continuous Aggregates
-* #5417 Refactor and optimize distributed COPY
+* #5312 Add timeout support to the ping_data_node()
 * #5339 Support UPDATE/DELETE on compressed hypertables
+* #5344 Enable JOINS for Hierarchical Continuous Aggregates
+* #5361 Add parallel support for partialize_agg()
+* #5417 Refactor and optimize distributed COPY
+* #5454 Add support for ON CONFLICT DO UPDATE for compressed hypertables
+* #5547 Skip Ordered Append when only 1 child node is present
+* #5510 Propagate vacuum/analyze to compressed chunks
 
 **Bugfixes**
+* #5233 Out of on_proc_exit slots on guc license change
 * #5396 Fix SEGMENTBY columns predicates to be pushed down
 * #5410 Fix file trailer handling in the COPY fetcher
-* #5233 Out of on_proc_exit slots on guc license change
 * #5427 Handle user-defined FDW options properly
 * #5428 Use consistent snapshots when scanning metadata
 * #5442 Decompression may have lost DEFAULT values
 * #5446 Add checks for malloc failure in libpq calls
-* #5470 Ensure superuser perms during copy/move chunk
 * #5459 Fix issue creating dimensional constraints
-* #5499 Do not segfault on large histogram() parameters
-* #5497 Allow named time_bucket arguments in Cagg definition
-* #5500 Fix when no FROM clause in continuous aggregate definition
 * #5462 Fix segfault after column drop on compressed table
+* #5470 Ensure superuser perms during copy/move chunk
+* #5497 Allow named time_bucket arguments in Cagg definition
+* #5499 Do not segfault on large histogram() parameters
+* #5500 Fix when no FROM clause in continuous aggregate definition
+* #5544 Fix refresh from beginning of Continuous Aggregate with variable time bucket
+* #5556 Fix duplicated entries on timescaledb_experimental.policies view
+* #5433 Fix join rte in CAggs with joins
+* #5543 Copy scheduled_jobs list before sorting it
+* #5570 Improve interpolate error message on datatype mismatch
+* #5558 Use regrole for job owner
 
 **Thanks**
 * @nikolaps for reporting an issue with the COPY fetcher
 * @S-imo-n for reporting the issue on Background Worker Scheduler crash
 * @kovetskiy and @DZDomi for reporting peformance regression in Realtime Continuous Aggregates
 * @geezhu for reporting issue on segfault in historgram()
+* @H25E for reporting error refreshing from beginning of a Continuous Aggregate with variable time bucket
+* @mwahlhuetter for reporting issue with duplicated entries on timescaledb_experimental.policies view
+* @mwahlthuetter for reporting the issue with joins in CAggs
+* @ollz272 for reporting an issue with interpolate error messages
 
 ## 2.10.1 (2023-03-07)
 

@@ -113,5 +113,162 @@ ALTER FUNCTION _timescaledb_functions.bookend_finalfunc(internal, anyelement, "a
 ALTER FUNCTION _timescaledb_functions.bookend_serializefunc(internal) SET SCHEMA _timescaledb_internal;
 ALTER FUNCTION _timescaledb_functions.bookend_deserializefunc(bytea, internal) SET SCHEMA _timescaledb_internal;
 
+ALTER FUNCTION _timescaledb_functions.compressed_data_in(CSTRING) SET SCHEMA _timescaledb_internal;
+ALTER FUNCTION _timescaledb_functions.compressed_data_out(_timescaledb_internal.compressed_data) SET SCHEMA _timescaledb_internal;
+ALTER FUNCTION _timescaledb_functions.compressed_data_send(_timescaledb_internal.compressed_data) SET SCHEMA _timescaledb_internal;
+ALTER FUNCTION _timescaledb_functions.compressed_data_recv(internal) SET SCHEMA _timescaledb_internal;
+
+ALTER FUNCTION _timescaledb_functions.rxid_in(cstring) SET SCHEMA _timescaledb_internal;
+ALTER FUNCTION _timescaledb_functions.rxid_out(@extschema@.rxid) SET SCHEMA _timescaledb_internal;
+
 DROP SCHEMA _timescaledb_functions;
 
+CREATE FUNCTION _timescaledb_internal.is_main_table(
+    table_oid regclass
+)
+    RETURNS bool LANGUAGE SQL STABLE AS
+$BODY$
+    SELECT EXISTS(SELECT 1 FROM _timescaledb_catalog.hypertable WHERE table_name = relname AND schema_name = nspname)
+    FROM pg_class c
+    INNER JOIN pg_namespace n ON (n.OID = c.relnamespace)
+    WHERE c.OID = table_oid;
+$BODY$ SET search_path TO pg_catalog, pg_temp;
+
+-- Check if given table is a hypertable's main table
+CREATE FUNCTION _timescaledb_internal.is_main_table(
+    schema_name NAME,
+    table_name  NAME
+)
+    RETURNS BOOLEAN LANGUAGE SQL STABLE AS
+$BODY$
+     SELECT EXISTS(
+         SELECT 1 FROM _timescaledb_catalog.hypertable h
+         WHERE h.schema_name = is_main_table.schema_name AND
+               h.table_name = is_main_table.table_name
+     );
+$BODY$ SET search_path TO pg_catalog, pg_temp;
+
+-- Get a hypertable given its main table OID
+CREATE FUNCTION _timescaledb_internal.hypertable_from_main_table(
+    table_oid regclass
+)
+    RETURNS _timescaledb_catalog.hypertable LANGUAGE SQL STABLE AS
+$BODY$
+    SELECT h.*
+    FROM pg_class c
+    INNER JOIN pg_namespace n ON (n.OID = c.relnamespace)
+    INNER JOIN _timescaledb_catalog.hypertable h ON (h.table_name = c.relname AND h.schema_name = n.nspname)
+    WHERE c.OID = table_oid;
+$BODY$ SET search_path TO pg_catalog, pg_temp;
+
+CREATE FUNCTION _timescaledb_internal.main_table_from_hypertable(
+    hypertable_id int
+)
+    RETURNS regclass LANGUAGE SQL STABLE AS
+$BODY$
+    SELECT format('%I.%I',h.schema_name, h.table_name)::regclass
+    FROM _timescaledb_catalog.hypertable h
+    WHERE id = hypertable_id;
+$BODY$ SET search_path TO pg_catalog, pg_temp;
+
+-- Gets the sql code for representing the literal for the given time value (in the internal representation) as the column_type.
+CREATE FUNCTION _timescaledb_internal.time_literal_sql(
+    time_value      BIGINT,
+    column_type     REGTYPE
+)
+    RETURNS text LANGUAGE PLPGSQL STABLE AS
+$BODY$
+DECLARE
+    ret text;
+BEGIN
+    IF time_value IS NULL THEN
+        RETURN format('%L', NULL);
+    END IF;
+    CASE column_type
+      WHEN 'BIGINT'::regtype, 'INTEGER'::regtype, 'SMALLINT'::regtype THEN
+        RETURN format('%L', time_value); -- scale determined by user.
+      WHEN 'TIMESTAMP'::regtype THEN
+        --the time_value for timestamps w/o tz does not depend on local timezones. So perform at UTC.
+        RETURN format('TIMESTAMP %1$L', timezone('UTC',_timescaledb_internal.to_timestamp(time_value))); -- microseconds
+      WHEN 'TIMESTAMPTZ'::regtype THEN
+        -- assume time_value is in microsec
+        RETURN format('TIMESTAMPTZ %1$L', _timescaledb_internal.to_timestamp(time_value)); -- microseconds
+      WHEN 'DATE'::regtype THEN
+        RETURN format('%L', timezone('UTC',_timescaledb_internal.to_timestamp(time_value))::date);
+      ELSE
+         EXECUTE 'SELECT format(''%L'', $1::' || column_type::text || ')' into ret using time_value;
+         RETURN ret;
+    END CASE;
+END
+$BODY$ SET search_path TO pg_catalog, pg_temp;
+
+-- drop dependent views
+DROP VIEW IF EXISTS timescaledb_information.job_errors;
+DROP VIEW IF EXISTS timescaledb_information.job_stats;
+DROP VIEW IF EXISTS timescaledb_information.jobs;
+DROP VIEW IF EXISTS timescaledb_experimental.policies;
+
+ALTER TABLE _timescaledb_config.bgw_job
+    ALTER COLUMN owner DROP DEFAULT,
+    ALTER COLUMN owner TYPE name USING owner::name,
+    ALTER COLUMN owner SET DEFAULT current_role;
+CREATE TABLE _timescaledb_config.bgw_job_tmp AS SELECT * FROM _timescaledb_config.bgw_job;
+
+ALTER EXTENSION timescaledb DROP TABLE _timescaledb_config.bgw_job;
+ALTER EXTENSION timescaledb DROP SEQUENCE _timescaledb_config.bgw_job_id_seq;
+ALTER TABLE _timescaledb_internal.bgw_job_stat
+      DROP CONSTRAINT IF EXISTS bgw_job_stat_job_id_fkey;
+ALTER TABLE _timescaledb_internal.bgw_policy_chunk_stats
+      DROP CONSTRAINT IF EXISTS bgw_policy_chunk_stats_job_id_fkey;
+CREATE TABLE _timescaledb_internal.tmp_bgw_job_seq_value AS
+       SELECT last_value, is_called FROM _timescaledb_config.bgw_job_id_seq;
+DROP TABLE _timescaledb_config.bgw_job;
+
+CREATE SEQUENCE _timescaledb_config.bgw_job_id_seq MINVALUE 1000;
+SELECT pg_catalog.pg_extension_config_dump('_timescaledb_config.bgw_job_id_seq', '');
+SELECT pg_catalog.setval('_timescaledb_config.bgw_job_id_seq', last_value, is_called)
+  FROM _timescaledb_internal.tmp_bgw_job_seq_value;
+DROP TABLE _timescaledb_internal.tmp_bgw_job_seq_value;
+
+CREATE TABLE _timescaledb_config.bgw_job (
+  id integer NOT NULL DEFAULT nextval('_timescaledb_config.bgw_job_id_seq'),
+  application_name name NOT NULL,
+  schedule_interval interval NOT NULL,
+  max_runtime interval NOT NULL,
+  max_retries integer NOT NULL,
+  retry_period interval NOT NULL,
+  proc_schema name NOT NULL,
+  proc_name name NOT NULL,
+  owner name NOT NULL DEFAULT current_role,
+  scheduled bool NOT NULL DEFAULT TRUE,
+  fixed_schedule bool not null default true,
+  initial_start timestamptz,
+  hypertable_id integer,
+  config jsonb,
+  check_schema name,
+  check_name name,
+  timezone text,
+  CONSTRAINT bgw_job_pkey PRIMARY KEY (id),
+  CONSTRAINT bgw_job_hypertable_id_fkey FOREIGN KEY (hypertable_id) REFERENCES _timescaledb_catalog.hypertable (id) ON DELETE CASCADE
+);
+
+ALTER SEQUENCE _timescaledb_config.bgw_job_id_seq OWNED BY _timescaledb_config.bgw_job.id;
+CREATE INDEX bgw_job_proc_hypertable_id_idx
+       ON _timescaledb_config.bgw_job(proc_schema,proc_name,hypertable_id);
+INSERT INTO _timescaledb_config.bgw_job
+       SELECT * FROM _timescaledb_config.bgw_job_tmp ORDER BY id;
+DROP TABLE _timescaledb_config.bgw_job_tmp;
+ALTER TABLE _timescaledb_internal.bgw_job_stat
+      ADD CONSTRAINT bgw_job_stat_job_id_fkey
+      	  FOREIGN KEY(job_id)
+	  REFERENCES _timescaledb_config.bgw_job(id)
+	  ON DELETE CASCADE;
+ALTER TABLE _timescaledb_internal.bgw_policy_chunk_stats
+      ADD CONSTRAINT bgw_policy_chunk_stats_job_id_fkey
+      	  FOREIGN KEY(job_id)
+	  REFERENCES _timescaledb_config.bgw_job(id)
+	  ON DELETE CASCADE;
+
+SELECT pg_catalog.pg_extension_config_dump('_timescaledb_config.bgw_job', 'WHERE id >= 1000');
+GRANT SELECT ON _timescaledb_config.bgw_job TO PUBLIC;
+GRANT SELECT ON _timescaledb_config.bgw_job_id_seq TO PUBLIC;
