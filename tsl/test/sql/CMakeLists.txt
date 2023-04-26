@@ -4,6 +4,7 @@ include(GenerateTestSchedule)
 # so unless you have a good reason, add new test files here.
 set(TEST_FILES
     bgw_custom.sql
+    bgw_security.sql
     bgw_policy.sql
     cagg_errors.sql
     cagg_invalidation.sql
@@ -67,6 +68,7 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     cagg_tableam.sql
     cagg_usage.sql
     cagg_policy_run.sql
+    cagg_repair.sql
     data_fetcher.sql
     data_node_bootstrap.sql
     data_node.sql

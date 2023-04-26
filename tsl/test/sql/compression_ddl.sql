@@ -42,6 +42,12 @@ ALTER TABLE test1 SET (fillfactor=100);
 ALTER TABLE test1 RESET (fillfactor);
 ALTER TABLE test1 ALTER COLUMN b SET STATISTICS 10;
 
+-- make sure we cannot create constraints or unique indexes on compressed hypertables
+\set ON_ERROR_STOP 0
+ALTER TABLE test1 ADD CONSTRAINT c1 UNIQUE(time,i);
+CREATE UNIQUE INDEX unique_index ON test1(time,i);
+\set ON_ERROR_STOP 1
+
 --test adding boolean columns with default and not null
 CREATE TABLE records (time timestamp NOT NULL);
 SELECT create_hypertable('records', 'time');
@@ -642,7 +648,7 @@ AND time <= '2000-01-05 23:55:00+0';
 
 -- force index scans to check index mapping
 -- this verifies that we are actually using compressed chunk index scans
--- currently we cannot use indexes on uncompressed chunks due to a bug:
+-- previously we could not use indexes on uncompressed chunks due to a bug:
 -- https://github.com/timescale/timescaledb/issues/5432
 --
 -- this check basically makes sure that the indexes are built properly
@@ -650,10 +656,12 @@ AND time <= '2000-01-05 23:55:00+0';
 SET enable_seqscan = off;
 EXPLAIN (costs off) SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 CALL recompress_chunk(:'CHUNK_NAME'::regclass);
 SELECT count(*), sum(v0), sum(v1), sum(v2), sum(v3)
 FROM compression_insert
@@ -661,7 +669,8 @@ WHERE time >= '2000-01-01 0:00:00+0'
 AND time <= '2000-01-05 23:55:00+0';
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SET enable_seqscan = default;
 
 -- 1. drop column after first insert into chunk, before compressing
@@ -690,10 +699,12 @@ AND time <= '2000-01-11 23:55:00+0';
 SET enable_seqscan = off;
 EXPLAIN (costs off) SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 CALL recompress_chunk(:'CHUNK_NAME'::regclass);
 SELECT count(*), sum(v0), sum(v1), sum(v2), sum(v3)
 FROM compression_insert
@@ -701,7 +712,8 @@ WHERE time >= '2000-01-07 0:00:00+0'
 AND time <= '2000-01-11 23:55:00+0';
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SET enable_seqscan = default;
 
 -- 2. drop column after compressing chunk
@@ -729,10 +741,12 @@ AND time <= '2000-01-19 23:55:00+0';
 SET enable_seqscan = off;
 EXPLAIN (costs off) SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 CALL recompress_chunk(:'CHUNK_NAME'::regclass);
 SELECT count(*), sum(v0), sum(v1), sum(v2), sum(v3)
 FROM compression_insert
@@ -740,7 +754,8 @@ WHERE time >= '2000-01-15 0:00:00+0'
 AND time <= '2000-01-19 23:55:00+0';
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SET enable_seqscan = default;
 
 -- 3. add new column after first insert into chunk, before compressing
@@ -768,10 +783,12 @@ AND time <= '2000-01-26 23:55:00+0';
 SET enable_seqscan = off;
 EXPLAIN (costs off) SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 CALL recompress_chunk(:'CHUNK_NAME'::regclass);
 SELECT count(*), sum(v0), sum(v1), sum(v2), sum(v3)
 FROM compression_insert
@@ -779,7 +796,8 @@ WHERE time >= '2000-01-22 0:00:00+0'
 AND time <= '2000-01-26 23:55:00+0';
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SET enable_seqscan = default;
 
 -- 4. add new column after compressing chunk
@@ -806,10 +824,12 @@ AND time <= '2000-02-01 23:55:00+0';
 SET enable_seqscan = off;
 EXPLAIN (costs off) SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 CALL recompress_chunk(:'CHUNK_NAME'::regclass);
 SELECT count(*), sum(v0), sum(v1), sum(v2), sum(v3)
 FROM compression_insert
@@ -817,7 +837,8 @@ WHERE time >= '2000-01-28 0:00:00+0'
 AND time <= '2000-02-01 23:55:00+0';
 SELECT device_id, count(*)
 FROM compression_insert
-GROUP BY device_id;
+GROUP BY device_id
+ORDER BY device_id;
 SET enable_seqscan = default;
 
 DROP TABLE compression_insert;
