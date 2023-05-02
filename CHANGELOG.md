@@ -27,6 +27,9 @@ accidentally triggering the load of a previous DB version.**
 * #5570 Improve interpolate error message on datatype mismatch
 * #5573 Fix unique constraint on compressed tables
 * #5615 Add permission checks to run_job()
+* #5614 Enable run_job() for telemetry job
+* #5578 Fix on-insert decompression after schema changes
+* #5613 Quote username identifier appropriately
 
 **Thanks**
 * @kovetskiy and @DZDomi for reporting peformance regression in Realtime Continuous Aggregates
