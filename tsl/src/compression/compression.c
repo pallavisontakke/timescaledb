@@ -1957,6 +1957,12 @@ decompress_batches_for_insert(ChunkInsertState *cis, Chunk *chunk, TupleTableSlo
 		return;
 	}
 
+	if (!ts_guc_enable_dml_decompression)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("inserting into compressed chunk with unique constraints disabled"),
+				 errhint("Set timescaledb.enable_dml_decompression to TRUE.")));
+
 	Chunk *comp = ts_chunk_get_by_id(chunk->fd.compressed_chunk_id, true);
 	Relation in_rel = relation_open(comp->table_id, RowExclusiveLock);
 
@@ -2259,8 +2265,13 @@ build_update_delete_scankeys(RowDecompressor *decompressor, List *filters, int *
  * This method will:
  *  1.scan compressed chunk
  *  2.decompress the row
- *  3.insert decompressed rows to uncompressed chunk
- *  4.delete this row from compressed chunk
+ *  3.delete this row from compressed chunk
+ *  4.insert decompressed rows to uncompressed chunk
+ *
+ * Return value:
+ * if all 4 steps defined above pass set chunk_status_changed to true and return true
+ * if step 4 fails return false. Step 3 will fail if there are conflicting concurrent operations on
+ * same chunk.
  */
 static bool
 decompress_batches(RowDecompressor *decompressor, ScanKeyData *scankeys, int num_scankeys,
@@ -2301,7 +2312,6 @@ decompress_batches(RowDecompressor *decompressor, ScanKeyData *scankeys, int num
 						  decompressor->compressed_datums,
 						  decompressor->compressed_is_nulls);
 
-		row_decompressor_decompress_row(decompressor, NULL);
 		TM_FailureData tmfd;
 		TM_Result result;
 		result = table_tuple_delete(decompressor->in_rel,
@@ -2313,19 +2323,49 @@ decompress_batches(RowDecompressor *decompressor, ScanKeyData *scankeys, int num
 									&tmfd,
 									false);
 
-		if (result == TM_Updated || result == TM_Deleted)
+		switch (result)
 		{
-			if (IsolationUsesXactSnapshot())
-				ereport(ERROR,
-						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-						 errmsg("could not serialize access due to concurrent update")));
-			return false;
+			/* If the tuple has been already deleted, most likely somebody
+			 * decompressed the tuple already */
+			case TM_Deleted:
+			{
+				if (IsolationUsesXactSnapshot())
+				{
+					/* For Repeatable Read isolation level report error */
+					table_endscan(heapScan);
+					ereport(ERROR,
+							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							 errmsg("could not serialize access due to concurrent update")));
+				}
+				continue;
+			}
+			break;
+			/*
+			 * If another transaction is updating the compressed data,
+			 * we have to abort the transaction to keep consistency.
+			 */
+			case TM_Updated:
+			{
+				table_endscan(heapScan);
+				elog(ERROR, "tuple concurrently updated");
+			}
+			break;
+			case TM_Invisible:
+			{
+				table_endscan(heapScan);
+				elog(ERROR, "attempted to lock invisible tuple");
+			}
+			break;
+			case TM_Ok:
+				break;
+			default:
+			{
+				table_endscan(heapScan);
+				elog(ERROR, "unexpected tuple operation result: %d", result);
+			}
+			break;
 		}
-		if (result == TM_Invisible)
-		{
-			elog(ERROR, "attempted to lock invisible tuple");
-			return false;
-		}
+		row_decompressor_decompress_row(decompressor, NULL);
 		*chunk_status_changed = true;
 	}
 	if (scankeys)
@@ -2406,33 +2446,108 @@ decompress_batches_for_update_delete(Chunk *chunk, List *predicates)
  * Once Scan node is found check if chunk is compressed, if so then
  * decompress those segments which match the filter conditions if present.
  */
+static bool decompress_chunk_walker(PlanState *ps, List *relids);
+
 bool
-decompress_target_segments(PlanState *ps)
+decompress_target_segments(ModifyTableState *ps)
+{
+	List *relids = castNode(ModifyTable, ps->ps.plan)->resultRelations;
+	Assert(relids);
+
+	return decompress_chunk_walker(&ps->ps, relids);
+}
+
+static bool
+decompress_chunk_walker(PlanState *ps, List *relids)
 {
 	RangeTblEntry *rte = NULL;
+	bool needs_decompression = false;
+	bool should_rescan = false;
+	List *predicates = NIL;
 	Chunk *current_chunk;
 	if (ps == NULL)
 		return false;
 
 	switch (nodeTag(ps))
 	{
+		/* Note: IndexOnlyScans will never be selected for target
+		 * tables because system columns are necessary in order to modify the
+		 * data and those columns cannot be a part of the index
+		 */
+		case T_IndexScanState:
+		{
+			/* Get the index quals on the original table and also include
+			 * any filters that are used to for filtering heap tuples
+			 */
+			predicates = list_union(((IndexScan *) ps->plan)->indexqualorig, ps->plan->qual);
+			needs_decompression = true;
+			break;
+		}
+		case T_BitmapHeapScanState:
+			predicates = list_union(((BitmapHeapScan *) ps->plan)->bitmapqualorig, ps->plan->qual);
+			needs_decompression = true;
+			should_rescan = true;
+			break;
 		case T_SeqScanState:
 		case T_SampleScanState:
-		case T_IndexScanState:
-		case T_IndexOnlyScanState:
-		case T_BitmapHeapScanState:
 		case T_TidScanState:
 		case T_TidRangeScanState:
-			rte = rt_fetch(((Scan *) ps->plan)->scanrelid, ps->state->es_range_table);
-			current_chunk = ts_chunk_get_by_relid(rte->relid, false);
-			if (current_chunk && ts_chunk_is_compressed(current_chunk))
-			{
-				decompress_batches_for_update_delete(current_chunk, ps->plan->qual);
-			}
+		{
+			/* We copy so we can always just free the predicates */
+			predicates = list_copy(ps->plan->qual);
+			needs_decompression = true;
 			break;
+		}
 		default:
 			break;
 	}
-	return planstate_tree_walker(ps, decompress_target_segments, NULL);
+	if (needs_decompression)
+	{
+		/*
+		 * We are only interested in chunk scans of chunks that are the
+		 * target of the DML statement not chunk scan on joined hypertables
+		 * even when it is a self join
+		 */
+		int scanrelid = ((Scan *) ps->plan)->scanrelid;
+		if (list_member_int(relids, scanrelid))
+		{
+			rte = rt_fetch(scanrelid, ps->state->es_range_table);
+			current_chunk = ts_chunk_get_by_relid(rte->relid, false);
+			if (current_chunk && ts_chunk_is_compressed(current_chunk))
+			{
+				if (!ts_guc_enable_dml_decompression)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("UPDATE/DELETE is disabled on compressed chunks"),
+							 errhint("Set timescaledb.enable_dml_decompression to TRUE.")));
+
+				decompress_batches_for_update_delete(current_chunk, predicates);
+
+				/* This is a workaround specifically for bitmap heap scans:
+				 * during node initialization, initialize the scan state with the active snapshot
+				 * but since we are inserting data to be modified during the same query, they end up
+				 * missing that data by using a snapshot which doesn't account for this decompressed
+				 * data. To circumvent this issue, we change the internal scan state to use the
+				 * transaction snapshot and execute a rescan so the scan state is set correctly and
+				 * includes the new data.
+				 */
+				if (should_rescan)
+				{
+					ScanState *ss = ((ScanState *) ps);
+					if (ss && ss->ss_currentScanDesc)
+					{
+						ss->ss_currentScanDesc->rs_snapshot = GetTransactionSnapshot();
+						ExecReScan(ps);
+					}
+				}
+			}
+		}
+	}
+
+	if (predicates)
+		pfree(predicates);
+
+	return planstate_tree_walker(ps, decompress_chunk_walker, relids);
 }
+
 #endif
