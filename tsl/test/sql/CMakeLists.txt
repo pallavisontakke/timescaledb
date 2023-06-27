@@ -105,7 +105,8 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     tsl_tables.sql
     license_tsl.sql
     fixed_schedules.sql
-    recompress_chunk_segmentwise.sql)
+    recompress_chunk_segmentwise.sql
+    transparent_decompression_join_index.sql)
 endif(CMAKE_BUILD_TYPE MATCHES Debug)
 
 if((${PG_VERSION_MAJOR} GREATER_EQUAL "14"))
@@ -114,6 +115,10 @@ if((${PG_VERSION_MAJOR} GREATER_EQUAL "14"))
   endif()
   list(APPEND TEST_FILES compression.sql compression_update_delete.sql
        compression_permissions.sql)
+endif()
+
+if((${PG_VERSION_MAJOR} GREATER_EQUAL "15"))
+  list(APPEND TEST_FILES merge_compress.sql)
 endif()
 
 set(SOLO_TESTS
@@ -148,7 +153,10 @@ if(${PG_VERSION_MAJOR} EQUAL "15" AND ${PG_VERSION_MINOR} LESS "3")
 endif()
 
 set(TEST_TEMPLATES
-    compression_insert.sql.in cagg_union_view.sql.in plan_skip_scan.sql.in
+    compression_insert.sql.in
+    compression_sorted_merge.sql.in
+    cagg_union_view.sql.in
+    plan_skip_scan.sql.in
     transparent_decompression.sql.in
     transparent_decompression_ordered_index.sql.in)
 

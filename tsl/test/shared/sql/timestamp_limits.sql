@@ -2,7 +2,7 @@
 -- Please see the included NOTICE for copyright information and
 -- LICENSE-TIMESCALE for a copy of the license.
 
-\c :TEST_DBNAME :ROLE_SUPERUSER
+\c :TEST_DBNAME
 CREATE OR REPLACE FUNCTION test.min_pg_timestamptz() RETURNS TIMESTAMPTZ
 AS :MODULE_PATHNAME, 'ts_timestamptz_pg_min' LANGUAGE C VOLATILE;
 

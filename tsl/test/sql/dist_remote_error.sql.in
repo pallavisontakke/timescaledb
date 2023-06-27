@@ -36,7 +36,7 @@ set client_min_messages to error;
 \ir include/dist_remote_error_setup.sql
 \unset sleepy_sendrecv
 
-\c :TEST_DBNAME :ROLE_SUPERUSER
+\c :TEST_DBNAME
 set client_min_messages to error;
 \ir include/dist_remote_error_setup.sql
 \set ECHO all

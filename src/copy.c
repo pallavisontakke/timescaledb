@@ -800,7 +800,11 @@ copyfrom(CopyChunkState *ccstate, List *range_table, Hypertable *ht, MemoryConte
 	 */
 	/* createSubid is creation check, newRelfilenodeSubid is truncation check */
 	if (ccstate->rel->rd_createSubid != InvalidSubTransactionId ||
+#if PG16_LT
 		ccstate->rel->rd_newRelfilenodeSubid != InvalidSubTransactionId)
+#else
+		ccstate->rel->rd_newRelfilelocatorSubid != InvalidSubTransactionId)
+#endif
 	{
 		ti_options |= HEAP_INSERT_SKIP_FSM;
 #if PG13_LT
@@ -1498,7 +1502,7 @@ timescaledb_move_from_table_to_chunks(Hypertable *ht, LOCKMODE lockmode)
 			 copy_table_to_chunk_error_callback,
 			 scandesc);
 	copy_chunk_state_destroy(ccstate);
-	heap_endscan(scandesc);
+	table_endscan(scandesc);
 	UnregisterSnapshot(snapshot);
 	table_close(rel, lockmode);
 

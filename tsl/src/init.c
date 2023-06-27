@@ -30,6 +30,7 @@
 #include "continuous_aggs/options.h"
 #include "continuous_aggs/refresh.h"
 #include "continuous_aggs/invalidation.h"
+#include "continuous_aggs/repair.h"
 #include "cross_module_fn.h"
 #include "nodes/data_node_dispatch.h"
 #include "data_node.h"
@@ -185,9 +186,9 @@ CrossModuleFunctions tsl_cm_functions = {
 	.decompress_chunk = tsl_decompress_chunk,
 	.decompress_batches_for_insert = decompress_batches_for_insert,
 #if PG14_GE
-	.decompress_batches_for_update_delete = decompress_batches_for_update_delete,
+	.decompress_target_segments = decompress_target_segments,
 #else
-	.decompress_batches_for_update_delete = NULL,
+	.decompress_target_segments = NULL,
 #endif
 
 	.data_node_add = data_node_add,

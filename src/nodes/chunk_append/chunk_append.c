@@ -38,6 +38,36 @@ has_joins(FromExpr *jointree)
 	return list_length(jointree->fromlist) != 1 || !IsA(linitial(jointree->fromlist), RangeTblRef);
 }
 
+/*
+ * Create the appropriate subpath for the outer MergeAppend
+ * node depending on the number of paths in the current group:
+ * Combine two or more group members into a mergeAppend node
+ * or append a single member as is.
+ * Members of the same group contain data of the same chunk,
+ * so they are combined into a MergeAppend node corresponding
+ * to that single chunk.
+ */
+static void
+create_group_subpath(PlannerInfo *root, RelOptInfo *rel, List *group, List *pathkeys,
+					 Relids required_outer, List *partitioned_rels, List **nested_children)
+{
+	if (list_length(group) > 1)
+	{
+		MergeAppendPath *append = create_merge_append_path_compat(root,
+																  rel,
+																  group,
+																  pathkeys,
+																  required_outer,
+																  partitioned_rels);
+		*nested_children = lappend(*nested_children, append);
+	}
+	else
+	{
+		/* If group only has 1 member we can add it directly */
+		*nested_children = lappend(*nested_children, linitial(group));
+	}
+}
+
 Path *
 ts_chunk_append_path_create(PlannerInfo *root, RelOptInfo *rel, Hypertable *ht, Path *subpath,
 							bool parallel_aware, bool ordered, List *nested_oids)
@@ -195,8 +225,63 @@ ts_chunk_append_path_create(PlannerInfo *root, RelOptInfo *rel, Hypertable *ht, 
 			break;
 	}
 
-	if (!ordered || ht->space->num_dimensions == 1)
+	if (!ordered)
+	{
 		path->cpath.custom_paths = children;
+	}
+	else if (ht->space->num_dimensions == 1)
+	{
+		List *nested_children = NIL;
+		/*
+		 * Convert the sort nodes that refer to the same chunk into a single
+		 * mergeAppend node to combine compressed and uncompressed chunk output.
+		 *
+		 * NB: We assume that the sort nodes referring the same chunk appear
+		 * one after the other and so we iterate through the children examining
+		 * consecutive pairs. Is it possible that this assumption is wrong?
+		 */
+		List *group = NIL;
+		Oid relid = InvalidOid;
+
+		foreach (lc, children)
+		{
+			Path *child = (Path *) lfirst(lc);
+			/* Check if this is in new group */
+			if (child->parent->relid != relid)
+			{
+				/* if previous group had members, process them */
+				if (group)
+				{
+					create_group_subpath(root,
+										 rel,
+										 group,
+										 path->cpath.path.pathkeys,
+										 PATH_REQ_OUTER(subpath),
+										 NIL,
+										 &nested_children);
+					group = NIL;
+				}
+				relid = child->parent->relid;
+			}
+
+			/* Form the new group */
+			group = lappend(group, child);
+		}
+
+		if (group)
+		{
+			create_group_subpath(root,
+								 rel,
+								 group,
+								 path->cpath.path.pathkeys,
+								 PATH_REQ_OUTER(subpath),
+								 NIL,
+								 &nested_children);
+		}
+
+		path->cpath.custom_paths = nested_children;
+		children = nested_children;
+	}
 	else
 	{
 		/*
@@ -234,21 +319,40 @@ ts_chunk_append_path_create(PlannerInfo *root, RelOptInfo *rel, Hypertable *ht, 
 			if (flat == NULL)
 				break;
 
+			/*
+			 * For each lc_oid, there will be 0, 1, or 2 matches in flat_list: 0 matches
+			 * if child was pruned, 1 match if the chunk is uncompressed or fully compressed,
+			 * 2 matches if the chunk is partially compressed.
+			 * If there are 2 matches they will also be consecutive (see assumption above)
+			 */
 			foreach (lc_oid, current_oids)
 			{
-				/* postgres may have pruned away some children already */
-				Path *child = (Path *) lfirst(flat);
-				Oid parent_relid = child->parent->relid;
-				bool is_not_pruned =
-					lfirst_oid(lc_oid) == root->simple_rte_array[parent_relid]->relid;
-
-				if (is_not_pruned)
+				bool is_not_pruned = true;
+#ifdef USE_ASSERT_CHECKING
+				int nmatches = 0;
+#endif
+				do
 				{
-					merge_childs = lappend(merge_childs, child);
-					flat = lnext_compat(children, flat);
-					if (flat == NULL)
-						break;
-				}
+					Path *child = (Path *) lfirst(flat);
+					Oid parent_relid = child->parent->relid;
+					is_not_pruned =
+						lfirst_oid(lc_oid) == root->simple_rte_array[parent_relid]->relid;
+					/* postgres may have pruned away some children already */
+					if (is_not_pruned)
+					{
+#ifdef USE_ASSERT_CHECKING
+						nmatches++;
+#endif
+						merge_childs = lappend(merge_childs, child);
+						flat = lnext_compat(children, flat);
+						if (flat == NULL)
+							break;
+					}
+					/* if current one matched then need to check next one for match */
+				} while (is_not_pruned);
+#ifdef USE_ASSERT_CHECKING
+				Assert(nmatches <= 2);
+#endif
 			}
 
 			if (list_length(merge_childs) > 1)

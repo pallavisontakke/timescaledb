@@ -29,7 +29,8 @@ CREATE TABLE sample_table (
 SELECT * FROM create_hypertable('sample_table', 'time',
        chunk_time_interval => INTERVAL '2 months');
 
-SELECT '2022-01-28 01:09:53.583252+05:30' as start_date \gset
+\set start_date '2022-01-28 01:09:53.583252+05:30'
+
 INSERT INTO sample_table
     SELECT
        	time + (INTERVAL '1 minute' * random()) AS time,
@@ -44,7 +45,8 @@ INSERT INTO sample_table
        	ORDER BY
        		time;
 
-SELECT '2023-03-17 17:51:11.322998+05:30' as start_date \gset
+\set start_date '2023-03-17 17:51:11.322998+05:30'
+
 -- insert into new chunks
 INSERT INTO sample_table VALUES (:'start_date'::timestamptz, 12, 21.98, 33.123, 'new row1');
 INSERT INTO sample_table VALUES (:'start_date'::timestamptz, 12, 17.66, 13.875, 'new row1');
@@ -734,7 +736,7 @@ DROP TABLE sample_table;
 
 -- test filtering with ORDER BY columns
 CREATE TABLE sample_table(time timestamptz, c1 int, c2 int, c3 int, c4 int);
-SELECT create_hypertable('sample_table','time');
+SELECT create_hypertable('sample_table','time',chunk_time_interval=>'1 day'::interval);
 ALTER TABLE sample_table SET (timescaledb.compress,timescaledb.compress_segmentby='c4', timescaledb.compress_orderby='c1,c2,time');
 INSERT INTO sample_table
 SELECT t, c1, c2, c3, c4
@@ -751,15 +753,16 @@ SELECT compress_chunk(show_chunks('sample_table'));
 SELECT ch1.schema_name|| '.' || ch1.table_name AS "CHUNK_1"
 FROM _timescaledb_catalog.chunk ch1, _timescaledb_catalog.hypertable ht
 WHERE ch1.hypertable_id = ht.id AND ch1.table_name LIKE '_hyper_%'
-ORDER BY ch1.id \gset
+ORDER BY ch1.id LIMIT 1 \gset
 
 -- get FIRST compressed chunk
 SELECT ch1.schema_name|| '.' || ch1.table_name AS "COMPRESS_CHUNK_1"
 FROM _timescaledb_catalog.chunk ch1, _timescaledb_catalog.hypertable ht
 WHERE ch1.hypertable_id = ht.id AND ch1.table_name LIKE 'compress_%'
-ORDER BY ch1.id \gset
+ORDER BY ch1.id LIMIT 1 \gset
 
 -- check that you uncompress and delete only for exact SEGMENTBY value
+SET client_min_messages TO DEBUG1;
 BEGIN;
 -- report 10 rows
 SELECT COUNT(*) FROM :COMPRESS_CHUNK_1 where c4 = 5;
@@ -941,3 +944,360 @@ SELECT COUNT(*) FROM :COMPRESS_CHUNK_1 WHERE c4 > 5 AND _ts_meta_min_2 <= 5 and 
 -- report true
 SELECT COUNT(*) = :total_rows - :total_affected_rows FROM sample_table;
 ROLLBACK;
+
+-- check that you uncompress and delete only tuples which satisfy SEGMENTBY
+-- and ORDERBY qualifiers.
+-- no: of rows satisfying SEGMENTBY qualifiers is 10
+-- no: of rows satisfying ORDERBY qualifiers is 3
+-- Once both qualifiers are applied ensure that only 7 rows are present in
+-- compressed chunk
+BEGIN;
+-- report 0 rows in uncompressed chunk
+SELECT COUNT(*) FROM ONLY :CHUNK_1;
+-- report 10 compressed rows for given condition c4 = 4
+SELECT COUNT(*) FROM :COMPRESS_CHUNK_1 WHERE c4 = 4;
+-- report 3 compressed rows for given condition c4 = 4 and c1 >= 7
+SELECT COUNT(*) FROM :COMPRESS_CHUNK_1 WHERE c4 = 4 AND _ts_meta_max_1 >= 7;
+SELECT COUNT(*) AS "total_rows" FROM :COMPRESS_CHUNK_1 WHERE c4 = 4 \gset
+SELECT COUNT(*) AS "total_affected_rows" FROM :COMPRESS_CHUNK_1 WHERE c4 = 4 AND _ts_meta_max_1 >= 7 \gset
+UPDATE sample_table SET c3 = c3 + 0 WHERE c4 = 4 AND c1 >= 7;
+-- report 7 rows
+SELECT COUNT(*) FROM :COMPRESS_CHUNK_1 WHERE c4 = 4;
+-- ensure correct number of rows are moved from compressed chunk
+-- report true
+SELECT COUNT(*) = :total_rows - :total_affected_rows FROM :COMPRESS_CHUNK_1 WHERE c4 = 4;
+ROLLBACK;
+RESET client_min_messages;
+
+--github issue: 5640
+CREATE TABLE tab1(filler_1 int, filler_2 int, filler_3 int, time timestamptz NOT NULL, device_id int, v0 int, v1 int, v2 float, v3 float);
+CREATE INDEX ON tab1(time);
+CREATE INDEX ON tab1(device_id,time);
+SELECT create_hypertable('tab1','time',create_default_indexes:=false);
+
+ALTER TABLE tab1 DROP COLUMN filler_1;
+INSERT INTO tab1(time,device_id,v0,v1,v2,v3) SELECT time, device_id, device_id+1,  device_id + 2, device_id + 0.5, NULL FROM generate_series('2000-01-01 0:00:00+0'::timestamptz,'2000-01-05 23:55:00+0','57m') gtime(time), generate_series(1,1,1) gdevice(device_id);
+ALTER TABLE tab1 DROP COLUMN filler_2;
+INSERT INTO tab1(time,device_id,v0,v1,v2,v3) SELECT time, device_id, device_id-1, device_id + 2, device_id + 0.5, NULL FROM generate_series('2000-01-06 0:00:00+0'::timestamptz,'2000-01-12 23:55:00+0','58m') gtime(time), generate_series(1,1,1) gdevice(device_id);
+ALTER TABLE tab1 DROP COLUMN filler_3;
+INSERT INTO tab1(time,device_id,v0,v1,v2,v3) SELECT time, device_id, device_id, device_id + 2, device_id + 0.5, NULL FROM generate_series('2000-01-13 0:00:00+0'::timestamptz,'2000-01-19 23:55:00+0','59m') gtime(time), generate_series(1,1,1) gdevice(device_id);
+ANALYZE tab1;
+
+-- compress chunks
+ALTER TABLE tab1 SET (timescaledb.compress, timescaledb.compress_orderby='time DESC', timescaledb.compress_segmentby='device_id');
+SELECT compress_chunk(show_chunks('tab1'));
+
+-- ensure there is an index scan generated for below DELETE query
+BEGIN;
+SELECT count(*) FROM tab1 WHERE device_id = 1;
+INSERT INTO tab1(time,device_id,v0,v1,v2,v3) SELECT time, device_id, device_id+1,  device_id + 2, device_id + 1000, NULL FROM generate_series('2000-01-01 0:00:00+0'::timestamptz,'2000-01-05 23:55:00+0','2m') gtime(time), generate_series(1,5,1) gdevice(device_id);
+SELECT count(*) FROM tab1 WHERE device_id = 1;
+ANALYZE tab1;
+EXPLAIN (costs off) DELETE FROM public.tab1 WHERE public.tab1.device_id = 1;
+DELETE FROM tab1 WHERE tab1.device_id = 1;
+SELECT count(*) FROM tab1 WHERE device_id = 1;
+ROLLBACK;
+
+-- github issue 5658
+-- verify that bitmap heap scans work on all the correct data and
+-- none of it left over after the dml command
+BEGIN;
+SELECT count(*) FROM tab1 WHERE device_id = 1;
+INSERT INTO tab1(time,device_id,v0,v1,v2,v3) SELECT time, device_id, device_id+1,  device_id + 2, device_id + 1000, NULL FROM generate_series('2000-01-01 0:00:00+0'::timestamptz,'2000-01-05 23:55:00+0','2m') gtime(time), generate_series(1,5,1) gdevice(device_id);
+SELECT count(*) FROM tab1 WHERE device_id = 1;
+ANALYZE tab1;
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+EXPLAIN (costs off) DELETE FROM tab1 WHERE tab1.device_id = 1;
+DELETE FROM tab1 WHERE tab1.device_id = 1;
+SELECT count(*) FROM tab1 WHERE device_id = 1;
+ROLLBACK;
+
+-- create hypertable with space partitioning and compression
+CREATE TABLE tab2(filler_1 int, filler_2 int, filler_3 int, time timestamptz NOT NULL, device_id int, v0 int, v1 int, v2 float, v3 float);
+CREATE INDEX ON tab2(time);
+CREATE INDEX ON tab2(device_id,time);
+SELECT create_hypertable('tab2','time','device_id',3,create_default_indexes:=false);
+
+ALTER TABLE tab2 DROP COLUMN filler_1;
+INSERT INTO tab2(time,device_id,v0,v1,v2,v3) SELECT time, device_id, device_id+1, device_id + 2, device_id + 0.5, NULL FROM generate_series('2000-01-01 0:00:00+0'::timestamptz,'2000-01-05 23:55:00+0','35m') gtime(time), generate_series(1,1,1) gdevice(device_id);
+ALTER TABLE tab2 DROP COLUMN filler_2;
+INSERT INTO tab2(time,device_id,v0,v1,v2,v3) SELECT time, device_id, device_id+1, device_id + 2, device_id + 0.5, NULL FROM generate_series('2000-01-06 0:00:00+0'::timestamptz,'2000-01-12 23:55:00+0','45m') gtime(time), generate_series(1,1,1) gdevice(device_id);
+ALTER TABLE tab2 DROP COLUMN filler_3;
+INSERT INTO tab2(time,device_id,v0,v1,v2,v3) SELECT time, device_id, device_id+1, device_id + 2, device_id + 0.5, NULL FROM generate_series('2000-01-13 0:00:00+0'::timestamptz,'2000-01-19 23:55:00+0','55m') gtime(time), generate_series(1,1,1) gdevice(device_id);
+ANALYZE tab2;
+
+-- compress chunks
+ALTER TABLE tab2 SET (timescaledb.compress, timescaledb.compress_orderby='time DESC', timescaledb.compress_segmentby='device_id');
+SELECT compress_chunk(show_chunks('tab2'));
+
+-- below test will cause chunks of tab2 to get decompressed
+-- without fix for issue #5460
+SET timescaledb.enable_optimizations = OFF;
+BEGIN;
+DELETE FROM tab1 t1 USING tab2 t2 WHERE t1.device_id = t2.device_id AND t2.time > '2000-01-01';
+ROLLBACK;
+
+--cleanup
+RESET timescaledb.enable_optimizations;
+DROP table tab1;
+DROP table tab2;
+
+-- test joins with UPDATE/DELETE on compression chunks
+CREATE TABLE join_test1(time timestamptz NOT NULL,device text, value float);
+CREATE TABLE join_test2(time timestamptz NOT NULL,device text, value float);
+CREATE VIEW chunk_status AS SELECT ht.table_name AS hypertable, ch.table_name AS chunk,ch.status from _timescaledb_catalog.chunk ch INNER JOIN _timescaledb_catalog.hypertable ht ON ht.id=ch.hypertable_id AND ht.table_name IN ('join_test1','join_test2') ORDER BY ht.id, ch.id;
+
+SELECT table_name FROM create_hypertable('join_test1', 'time');
+SELECT table_name FROM create_hypertable('join_test2', 'time');
+
+ALTER TABLE join_test1 SET (timescaledb.compress, timescaledb.compress_segmentby='device');
+ALTER TABLE join_test2 SET (timescaledb.compress, timescaledb.compress_segmentby='device');
+
+INSERT INTO join_test1 VALUES ('2000-01-01','d1',0.1), ('2000-02-01','d1',0.1), ('2000-03-01','d1',0.1);
+INSERT INTO join_test2 VALUES ('2000-02-01','d1',0.1), ('2000-02-01','d2',0.1), ('2000-02-01','d3',0.1);
+
+SELECT compress_chunk(show_chunks('join_test1'));
+SELECT compress_chunk(show_chunks('join_test2'));
+
+SELECT * FROM chunk_status;
+
+BEGIN;
+DELETE FROM join_test1 USING join_test2;
+-- only join_test1 chunks should have status 9
+SELECT * FROM chunk_status;
+ROLLBACK;
+
+BEGIN;
+DELETE FROM join_test2 USING join_test1;
+-- only join_test2 chunks should have status 9
+SELECT * FROM chunk_status;
+ROLLBACK;
+
+BEGIN;
+DELETE FROM join_test1 t1 USING join_test1 t2 WHERE t1.time = '2000-01-01';
+-- only first chunk of join_test1 should have status change
+SELECT * FROM chunk_status;
+ROLLBACK;
+
+BEGIN;
+DELETE FROM join_test1 t1 USING join_test1 t2 WHERE t2.time = '2000-01-01';
+-- all chunks of join_test1 should have status 9
+SELECT * FROM chunk_status;
+ROLLBACK;
+
+BEGIN;
+UPDATE join_test1 t1 SET value = t1.value + 1 FROM join_test2 t2;
+-- only join_test1 chunks should have status 9
+SELECT * FROM chunk_status;
+ROLLBACK;
+
+BEGIN;
+UPDATE join_test2 t1 SET value = t1.value + 1 FROM join_test1 t2;
+-- only join_test2 chunks should have status 9
+SELECT * FROM chunk_status;
+ROLLBACK;
+
+BEGIN;
+UPDATE join_test1 t1 SET value = t1.value + 1 FROM join_test1 t2 WHERE t1.time = '2000-01-01';
+-- only first chunk of join_test1 should have status 9
+SELECT * FROM chunk_status;
+ROLLBACK;
+
+BEGIN;
+UPDATE join_test1 t1 SET value = t1.value + 1 FROM join_test1 t2 WHERE t2.time = '2000-01-01';
+-- all chunks of join_test1 should have status 9
+SELECT * FROM chunk_status;
+ROLLBACK;
+
+DROP TABLE join_test1;
+DROP TABLE join_test2;
+
+-- test if index scan qualifiers are properly used
+CREATE TABLE index_scan_test(time timestamptz NOT NULL, device_id int, value float);
+SELECT create_hypertable('index_scan_test','time',create_default_indexes:=false);
+INSERT INTO index_scan_test(time,device_id,value) SELECT time, device_id, device_id + 0.5 FROM generate_series('2000-01-01 0:00:00+0'::timestamptz,'2000-01-01 23:55:00+0','1m') gtime(time), generate_series(1,5,1) gdevice(device_id);
+
+-- compress chunks
+ALTER TABLE index_scan_test SET (timescaledb.compress, timescaledb.compress_orderby='time DESC', timescaledb.compress_segmentby='device_id');
+SELECT compress_chunk(show_chunks('index_scan_test'));
+ANALYZE index_scan_test;
+
+SELECT ch1.schema_name|| '.' || ch1.table_name AS "CHUNK_1"
+FROM _timescaledb_catalog.chunk ch1, _timescaledb_catalog.hypertable ht
+WHERE ht.table_name = 'index_scan_test'
+AND ch1.hypertable_id = ht.id
+AND ch1.table_name LIKE '_hyper%'
+ORDER BY ch1.id LIMIT 1 \gset
+
+SELECT ch2.schema_name|| '.' || ch2.table_name AS "COMP_CHUNK_1"
+FROM _timescaledb_catalog.chunk ch1, _timescaledb_catalog.chunk ch2, _timescaledb_catalog.hypertable ht
+WHERE ht.table_name = 'index_scan_test'
+AND ch1.hypertable_id = ht.id
+AND ch1.compressed_chunk_id  = ch2.id
+ORDER BY ch2.id LIMIT 1 \gset
+
+INSERT INTO index_scan_test(time,device_id,value) SELECT time, device_id, device_id + 0.5 FROM generate_series('2000-01-01 0:00:00+0'::timestamptz,'2000-01-05 23:55:00+0','1m') gtime(time), generate_series(1,5,1) gdevice(device_id);
+
+-- test index on single column
+BEGIN;
+SELECT count(*) as "UNCOMP_LEFTOVER" FROM ONLY :CHUNK_1 WHERE device_id != 2 \gset
+CREATE INDEX ON index_scan_test(device_id);
+EXPLAIN (costs off, verbose) DELETE FROM index_scan_test WHERE device_id = 2;
+DELETE FROM index_scan_test WHERE device_id = 2;
+-- everything should be deleted
+SELECT count(*) FROM index_scan_test where device_id = 2;
+
+-- there shouldn't be anything in the uncompressed chunk where device_id = 2
+SELECT count(*) = :UNCOMP_LEFTOVER FROM ONLY :CHUNK_1;
+-- there shouldn't be anything in the compressed chunk from device_id = 2
+SELECT count(*) FROM :COMP_CHUNK_1 where device_id = 2;
+ROLLBACK;
+
+-- test multi column index
+BEGIN;
+SELECT count(*) as "UNCOMP_LEFTOVER" FROM ONLY :CHUNK_1 WHERE device_id != 2 OR time <= '2000-01-02'::timestamptz \gset
+CREATE INDEX ON index_scan_test(device_id, time);
+EXPLAIN (costs off, verbose) DELETE FROM index_scan_test WHERE device_id = 2 AND time > '2000-01-02'::timestamptz;
+DELETE FROM index_scan_test WHERE device_id = 2 AND time > '2000-01-02'::timestamptz;
+-- everything should be deleted
+SELECT count(*) FROM index_scan_test WHERE device_id = 2 AND time > '2000-01-02'::timestamptz;
+
+-- there shouldn't be anything in the uncompressed chunk that matches predicates
+SELECT count(*) = :UNCOMP_LEFTOVER FROM ONLY :CHUNK_1;
+-- there shouldn't be anything in the compressed chunk that matches predicates
+SELECT count(*) FROM :COMP_CHUNK_1 WHERE device_id = 2 AND _ts_meta_max_1 >= '2000-01-02'::timestamptz;
+ROLLBACK;
+
+-- test index with filter condition
+BEGIN;
+SELECT count(*) as "UNCOMP_LEFTOVER" FROM ONLY :CHUNK_1 WHERE device_id != 2 OR time <= '2000-01-02'::timestamptz \gset
+CREATE INDEX ON index_scan_test(device_id);
+EXPLAIN (costs off, verbose) DELETE FROM index_scan_test WHERE device_id = 2 AND time > '2000-01-02'::timestamptz;
+DELETE FROM index_scan_test WHERE device_id = 2 AND time > '2000-01-02'::timestamptz;
+-- everything should be deleted
+SELECT count(*) FROM index_scan_test WHERE device_id = 2 AND time > '2000-01-02'::timestamptz;
+
+-- there shouldn't be anything in the uncompressed chunk that matches predicates
+SELECT count(*) = :UNCOMP_LEFTOVER FROM ONLY :CHUNK_1;
+-- there shouldn't be anything in the compressed chunk that matches predicates
+SELECT count(*) FROM :COMP_CHUNK_1 WHERE device_id = 2 AND _ts_meta_max_1 >= '2000-01-02'::timestamptz;
+ROLLBACK;
+
+-- test for disabling DML decompression
+SHOW timescaledb.enable_dml_decompression;
+SET timescaledb.enable_dml_decompression = false;
+
+\set ON_ERROR_STOP 0
+-- should ERROR both UPDATE/DELETE statements because the DML decompression is disabled
+UPDATE sample_table SET c3 = NULL WHERE c4 = 5;
+DELETE FROM sample_table WHERE c4 = 5;
+\set ON_ERROR_STOP 1
+
+-- make sure reseting the GUC we will be able to UPDATE/DELETE compressed chunks
+RESET timescaledb.enable_dml_decompression;
+SHOW timescaledb.enable_dml_decompression;
+
+BEGIN;
+-- report 0 rows
+SELECT count(*) FROM sample_table WHERE c4 = 5 AND c3 IS NULL;
+UPDATE sample_table SET c3 = NULL WHERE c4 = 5;
+-- report 10k rows
+SELECT count(*) FROM sample_table WHERE c4 = 5 AND c3 IS NULL;
+ROLLBACK;
+
+BEGIN;
+-- report 10k rows
+SELECT count(*) FROM sample_table WHERE c4 = 5;
+DELETE FROM sample_table WHERE c4 = 5;
+-- report 0 rows
+SELECT count(*) FROM sample_table WHERE c4 = 5;
+ROLLBACK;
+
+-- create new uncompressed chunk
+INSERT INTO sample_table
+SELECT t, 1, 1, 1, 1
+FROM generate_series('2023-05-04 00:00:00-00'::timestamptz,
+            '2023-05-04 00:00:00-00'::timestamptz + INTERVAL '2 hours',
+            INTERVAL '1 hour') t;
+
+-- check chunk compression status
+SELECT chunk_name, is_compressed
+FROM timescaledb_information.chunks
+WHERE hypertable_name = 'sample_table'
+ORDER BY chunk_name;
+
+-- test for uncompressed and compressed chunks
+SHOW timescaledb.enable_dml_decompression;
+SET timescaledb.enable_dml_decompression = false;
+
+BEGIN;
+-- report 3 rows
+SELECT count(*) FROM sample_table WHERE time >= '2023-05-04 00:00:00-00'::timestamptz;
+-- delete from uncompressed chunk should work
+DELETE FROM sample_table WHERE time >= '2023-05-04 00:00:00-00'::timestamptz;
+-- report 0 rows
+SELECT count(*) FROM sample_table WHERE time >= '2023-05-04 00:00:00-00'::timestamptz;
+ROLLBACK;
+
+BEGIN;
+-- report 0 rows
+SELECT count(*) FROM sample_table WHERE time >= '2023-05-04 00:00:00-00'::timestamptz AND c3 IS NULL;
+UPDATE sample_table SET c3 = NULL WHERE time >= '2023-05-04 00:00:00-00'::timestamptz;
+-- report 3 rows
+SELECT count(*) FROM sample_table WHERE time >= '2023-05-04 00:00:00-00'::timestamptz AND c3 IS NULL;
+ROLLBACK;
+
+\set ON_ERROR_STOP 0
+-- should ERROR both UPDATE/DELETE statements because the DML decompression is disabled
+-- and both statements we're touching compressed and uncompressed chunks
+UPDATE sample_table SET c3 = NULL WHERE time >= '2023-03-17 00:00:00-00'::timestamptz AND c3 IS NULL;
+DELETE FROM sample_table WHERE time >= '2023-03-17 00:00:00-00'::timestamptz;
+\set ON_ERROR_STOP 1
+
+--github issue: 5586
+--testcase with multiple indexes
+\c :TEST_DBNAME :ROLE_SUPERUSER
+DROP DATABASE IF EXISTS test;
+CREATE DATABASE test;
+\c test :ROLE_SUPERUSER
+SET client_min_messages = ERROR;
+CREATE EXTENSION timescaledb CASCADE;
+CREATE TABLE tab1(filler_1 int, filler_2 int, filler_3 int, time timestamptz NOT NULL, device_id int, v0 int, v1 int, v2 float, v3 float);
+SELECT create_hypertable('tab1','time',create_default_indexes:=false);
+INSERT INTO tab1(filler_1, filler_2, filler_3,time,device_id,v0,v1,v2,v3) SELECT device_id, device_id+1,  device_id + 2, time, device_id, device_id+1,  device_id + 2, device_id + 0.5, NULL FROM generate_series('2000-01-01 0:00:00+0'::timestamptz,'2000-01-05 23:55:00+0','2m') gtime(time), generate_series(1,5,1) gdevice(device_id);
+ALTER TABLE tab1 SET (timescaledb.compress, timescaledb.compress_orderby='time DESC', timescaledb.compress_segmentby='device_id, filler_1, filler_2, filler_3');
+-- create multiple indexes on compressed hypertable
+DROP INDEX _timescaledb_internal._compressed_hypertable_2_device_id_filler_1_filler_2_filler_idx;
+CREATE INDEX ON _timescaledb_internal._compressed_hypertable_2 (_ts_meta_min_1);
+CREATE INDEX ON _timescaledb_internal._compressed_hypertable_2 (_ts_meta_min_1, _ts_meta_sequence_num);
+CREATE INDEX ON _timescaledb_internal._compressed_hypertable_2 (_ts_meta_min_1, _ts_meta_max_1, filler_1);
+
+CREATE INDEX filler_1 ON _timescaledb_internal._compressed_hypertable_2 (filler_1);
+CREATE INDEX filler_2 ON _timescaledb_internal._compressed_hypertable_2 (filler_2);
+CREATE INDEX filler_3 ON _timescaledb_internal._compressed_hypertable_2 (filler_3);
+-- below indexes should be selected
+CREATE INDEX filler_1_filler_2 ON _timescaledb_internal._compressed_hypertable_2 (filler_1, filler_2);
+CREATE INDEX filler_2_filler_3 ON _timescaledb_internal._compressed_hypertable_2 (filler_2, filler_3);
+
+SELECT compress_chunk(show_chunks('tab1'));
+SET client_min_messages TO DEBUG2;
+BEGIN;
+SELECT COUNT(*) FROM tab1 WHERE filler_3 = 5 AND filler_2 = 4;
+UPDATE tab1 SET v0 = v1 + v2 WHERE filler_3 = 5 AND filler_2 = 4;
+ROLLBACK;
+
+BEGIN;
+SELECT COUNT(*) FROM tab1 WHERE filler_1 < 5 AND filler_2 = 4;
+UPDATE tab1 SET v0 = v1 + v2 WHERE filler_1 < 5 AND filler_2 = 4;
+ROLLBACK;
+
+-- idealy filler_1 index should be selected,
+-- instead first matching index is selected
+BEGIN;
+SELECT COUNT(*) FROM tab1 WHERE filler_1 < 5;
+UPDATE tab1 SET v0 = v1 + v2 WHERE filler_1 < 5;
+ROLLBACK;
+
+RESET client_min_messages;
+DROP TABLE tab1;

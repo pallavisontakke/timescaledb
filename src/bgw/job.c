@@ -24,6 +24,7 @@
 #include <storage/sinvaladt.h>
 #include <utils/acl.h>
 #include <utils/elog.h>
+#include <executor/execdebug.h>
 #include <utils/jsonb.h>
 #include <utils/snapmgr.h>
 #include <unistd.h>
@@ -226,6 +227,8 @@ bgw_job_from_tupleinfo(TupleInfo *ti, size_t alloc_size)
 	job = MemoryContextAllocZero(ti->mctx, alloc_size);
 	tuple = ts_scanner_fetch_heap_tuple(ti, false, &should_free);
 
+	old_ctx = MemoryContextSwitchTo(ti->mctx);
+
 	/*
 	 * Using heap_deform_tuple instead of GETSTRUCT since the tuple can
 	 * contain NULL values. Some of these cannot really be null, but we check
@@ -264,7 +267,8 @@ bgw_job_from_tupleinfo(TupleInfo *ti, size_t alloc_size)
 	}
 
 	if (!nulls[AttrNumberGetAttrOffset(Anum_bgw_job_timezone)])
-		job->fd.timezone = DatumGetTextPP(values[AttrNumberGetAttrOffset(Anum_bgw_job_timezone)]);
+		job->fd.timezone =
+			DatumGetTextPCopy(values[AttrNumberGetAttrOffset(Anum_bgw_job_timezone)]);
 
 	if (!nulls[AttrNumberGetAttrOffset(Anum_bgw_job_retry_period)])
 		job->fd.retry_period =
@@ -295,12 +299,11 @@ bgw_job_from_tupleinfo(TupleInfo *ti, size_t alloc_size)
 		job->fd.hypertable_id =
 			DatumGetInt32(values[AttrNumberGetAttrOffset(Anum_bgw_job_hypertable_id)]);
 
-	old_ctx = MemoryContextSwitchTo(ti->mctx);
-
 	if (!nulls[AttrNumberGetAttrOffset(Anum_bgw_job_config)])
-		job->fd.config = DatumGetJsonbP(values[AttrNumberGetAttrOffset(Anum_bgw_job_config)]);
+		job->fd.config = DatumGetJsonbPCopy(values[AttrNumberGetAttrOffset(Anum_bgw_job_config)]);
 
 	MemoryContextSwitchTo(old_ctx);
+
 	if (should_free)
 		heap_freetuple(tuple);
 
@@ -365,7 +368,13 @@ ts_bgw_job_get_scheduled(size_t alloc_size, MemoryContext mctx)
 
 		BgwJob *job = MemoryContextAllocZero(mctx, alloc_size);
 		HeapTuple tuple = ts_scanner_fetch_heap_tuple(ti, false, &should_free);
-		memcpy(job, GETSTRUCT(tuple), sizeof(FormData_bgw_job));
+
+		/*
+		 * Note that the nullable columns might have variable width, so we
+		 * handle them below. We can only use memcpy for the non-nullable fixed
+		 * width starting part of the BgwJob struct.
+		 */
+		memcpy(job, GETSTRUCT(tuple), offsetof(FormData_bgw_job, fixed_schedule));
 
 		if (should_free)
 			heap_freetuple(tuple);
@@ -714,11 +723,22 @@ get_job_lock_for_delete(int32 job_id)
 			proc = BackendIdGetProc(vxid->backendId);
 			if (proc != NULL && proc->isBackgroundWorker)
 			{
-				elog(NOTICE,
-					 "cancelling the background worker for job %d (pid %d)",
-					 job_id,
-					 proc->pid);
-				DirectFunctionCall1(pg_cancel_backend, Int32GetDatum(proc->pid));
+				/* Simply assuming that this pid corresponds to the background worker
+				 * running the job is not sufficient. The scheduler could also be the
+				 * one holding the lock, when transitioning the state of the job back
+				 * to scheduled state. So we must check we don't kill the scheduler.
+				 * See https://github.com/timescale/timescaledb/issues/5224
+				 */
+				const char *worker_name = GetBackgroundWorkerTypeByPid(proc->pid);
+
+				if (strcmp(worker_name, SCHEDULER_APPNAME) != 0)
+				{
+					elog(NOTICE,
+						 "cancelling the background worker for job %d (pid %d)",
+						 job_id,
+						 proc->pid);
+					DirectFunctionCall1(pg_cancel_backend, Int32GetDatum(proc->pid));
+				}
 			}
 		}
 
@@ -1205,7 +1225,6 @@ ts_bgw_job_entrypoint(PG_FUNCTION_ARGS)
 		if (job != NULL)
 		{
 			pfree(job);
-			job = NULL;
 		}
 
 		/*
@@ -1227,7 +1246,6 @@ ts_bgw_job_entrypoint(PG_FUNCTION_ARGS)
 			namestrcpy(&proc_name, NameStr(job->fd.proc_name));
 			namestrcpy(&proc_schema, NameStr(job->fd.proc_schema));
 			pfree(job);
-			job = NULL;
 		}
 
 		/*
@@ -1317,7 +1335,7 @@ ts_bgw_job_run_and_set_next_start(BgwJob *job, job_main_func func, int64 initial
 								  Interval *next_interval, bool atomic, bool mark)
 {
 	BgwJobStat *job_stat;
-	bool had_error;
+	bool result;
 
 	if (atomic)
 		StartTransactionCommand();
@@ -1325,10 +1343,10 @@ ts_bgw_job_run_and_set_next_start(BgwJob *job, job_main_func func, int64 initial
 	if (mark)
 		ts_bgw_job_stat_mark_start(job->fd.id);
 
-	had_error = func();
+	result = func();
 
 	if (mark)
-		ts_bgw_job_stat_mark_end(job, had_error ? JOB_FAILURE : JOB_SUCCESS);
+		ts_bgw_job_stat_mark_end(job, result ? JOB_SUCCESS : JOB_FAILURE);
 
 	/* Now update next_start. */
 	job_stat = ts_bgw_job_stat_find(job->fd.id);
@@ -1351,7 +1369,7 @@ ts_bgw_job_run_and_set_next_start(BgwJob *job, job_main_func func, int64 initial
 	if (atomic)
 		CommitTransactionCommand();
 
-	return had_error;
+	return result;
 }
 
 /* Insert a new job in the bgw_job relation */

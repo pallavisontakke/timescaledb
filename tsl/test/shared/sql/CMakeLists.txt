@@ -2,33 +2,33 @@ set(TEST_FILES_SHARED
     cagg_compression.sql
     classify_relation.sql
     constify_timestamptz_op_interval.sql
+    constraint_aware_append.sql
     constraint_exclusion_prepared.sql
     decompress_placeholdervar.sql
-    dist_chunk.sql
-    dist_distinct_pushdown.sql
-    dist_gapfill.sql
-    dist_insert.sql
     extension.sql
     subtract_integer_from_now.sql)
 
 set(TEST_TEMPLATES_SHARED
     decompress_join.sql.in
-    dist_fetcher_type.sql.in
     gapfill.sql.in
     generated_columns.sql.in
     ordered_append.sql.in
     ordered_append_join.sql.in
     transparent_decompress_chunk.sql.in
-    dist_distinct.sql.in
     space_constraint.sql.in)
 
 if((${PG_VERSION_MAJOR} GREATER_EQUAL "14"))
   list(APPEND TEST_FILES_SHARED compression_dml.sql memoize.sql)
 endif()
 
+# this test was changing the contents of tables in shared_setup.sql thus causing
+# other dependent tests to fail. Hence runing this test in solo
+if((${PG_VERSION_MAJOR} GREATER_EQUAL "15"))
+  list(APPEND SOLO_TESTS merge_dml.sql)
+endif()
+
 if(CMAKE_BUILD_TYPE MATCHES Debug)
-  list(APPEND TEST_FILES_SHARED dist_parallel_agg.sql dist_queries.sql
-       timestamp_limits.sql with_clause_parser.sql)
+  list(APPEND TEST_FILES_SHARED timestamp_limits.sql with_clause_parser.sql)
   list(APPEND TEST_TEMPLATES_SHARED constify_now.sql.in)
 endif(CMAKE_BUILD_TYPE MATCHES Debug)
 
@@ -57,13 +57,24 @@ endif()
 file(REMOVE ${TEST_SCHEDULE_SHARED})
 
 if(NOT TEST_GROUP_SIZE)
-  set(PARALLEL_GROUP_SIZE 20)
+  set(PARALLEL_GROUP_SIZE 1)
 else()
   set(PARALLEL_GROUP_SIZE ${TEST_GROUP_SIZE})
 endif()
 
 set(GROUP_MEMBERS 0)
 foreach(TEST_FILE ${TEST_FILES_SHARED})
+  string(REGEX REPLACE "(.+)\.sql" "\\1" TESTS_TO_RUN ${TEST_FILE})
+  if(GROUP_MEMBERS EQUAL 0)
+    file(APPEND ${TEST_SCHEDULE_SHARED} "\ntest: ")
+  endif()
+  file(APPEND ${TEST_SCHEDULE_SHARED} "${TESTS_TO_RUN} ")
+  math(EXPR GROUP_MEMBERS "(${GROUP_MEMBERS}+1)%${PARALLEL_GROUP_SIZE}")
+endforeach(TEST_FILE)
+file(APPEND ${TEST_SCHEDULE_SHARED} "\n")
+
+set(GROUP_MEMBERS 0)
+foreach(TEST_FILE ${SOLO_TESTS})
   string(REGEX REPLACE "(.+)\.sql" "\\1" TESTS_TO_RUN ${TEST_FILE})
   if(GROUP_MEMBERS EQUAL 0)
     file(APPEND ${TEST_SCHEDULE_SHARED} "\ntest: ")

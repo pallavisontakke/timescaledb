@@ -29,7 +29,7 @@ fi
 #docker doesn't set user
 USER=${USER:-$(whoami)}
 
-TEST_ROLE_SUPERUSER=${TEST_ROLE_SUPERUSER:-super_user}
+#TEST_ROLE_SUPERUSER=${TEST_ROLE_SUPERUSER:-super_user}
 TEST_ROLE_DEFAULT_PERM_USER=${TEST_ROLE_DEFAULT_PERM_USER:-default_perm_user}
 TEST_ROLE_DEFAULT_PERM_USER_2=${TEST_ROLE_DEFAULT_PERM_USER_2:-default_perm_user_2}
 
@@ -39,12 +39,11 @@ shift
 # we use mkdir here because it is an atomic operation unlike existance of a lockfile
 # where creating and checking are 2 separate operations
 if mkdir ${TEST_OUTPUT_DIR}/.pg_init 2>/dev/null; then
-  ${PSQL} "$@" -U ${USER} -d postgres -v ECHO=none -c "ALTER USER ${TEST_ROLE_SUPERUSER} WITH SUPERUSER;" >/dev/null
+  #${PSQL} "$@" -U ${USER} -d postgres -v ECHO=none -c "ALTER USER ${TEST_ROLE_SUPERUSER} WITH SUPERUSER;" >/dev/null
   ${PSQL} -U ${USER} \
      -v MODULE_PATHNAME="'timescaledb-${EXT_VERSION}'" \
      -v ROLE_DEFAULT_PERM_USER=${TEST_ROLE_DEFAULT_PERM_USER} \
      -v ROLE_DEFAULT_PERM_USER_2=${TEST_ROLE_DEFAULT_PERM_USER_2} \
-     -v ROLE_SUPERUSER=${TEST_ROLE_SUPERUSER} \
      -v TEST_BASE_NAME=${TEST_BASE_NAME} \
      -v TEST_DBNAME="${TEST_DBNAME}" \
      -v TEST_INPUT_DIR=${TEST_INPUT_DIR} \
@@ -72,7 +71,6 @@ ${PSQL} -U ${TEST_PGUSER} \
      -v TEST_BASE_NAME=${TEST_BASE_NAME} \
      -v TEST_INPUT_DIR=${TEST_INPUT_DIR} \
      -v TEST_OUTPUT_DIR=${TEST_OUTPUT_DIR} \
-     -v ROLE_SUPERUSER=${TEST_ROLE_SUPERUSER} \
      -v ROLE_DEFAULT_PERM_USER=${TEST_ROLE_DEFAULT_PERM_USER} \
      -v ROLE_DEFAULT_PERM_USER_2=${TEST_ROLE_DEFAULT_PERM_USER_2} \
      -v MODULE_PATHNAME="'timescaledb-${EXT_VERSION}'" \

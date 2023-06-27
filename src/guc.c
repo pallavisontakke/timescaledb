@@ -75,11 +75,14 @@ bool ts_guc_enable_qual_propagation = true;
 bool ts_guc_enable_cagg_reorder_groupby = true;
 bool ts_guc_enable_now_constify = true;
 bool ts_guc_enable_osm_reads = true;
+TSDLLEXPORT bool ts_guc_enable_dml_decompression = true;
 TSDLLEXPORT bool ts_guc_enable_transparent_decompression = true;
+TSDLLEXPORT bool ts_guc_enable_decompression_sorted_merge = true;
 bool ts_guc_enable_per_data_node_queries = true;
 bool ts_guc_enable_parameterized_data_node_scan = true;
 bool ts_guc_enable_async_append = true;
 TSDLLEXPORT bool ts_guc_enable_compression_indexscan = true;
+TSDLLEXPORT bool ts_guc_enable_bulk_decompression = true;
 TSDLLEXPORT bool ts_guc_enable_skip_scan = true;
 int ts_guc_max_open_chunks_per_insert; /* default is computed at runtime */
 int ts_guc_max_cached_chunks_per_hypertable = 100;
@@ -268,6 +271,17 @@ _guc_init(void)
 							 NULL,
 							 NULL);
 
+	DefineCustomBoolVariable("timescaledb.enable_dml_decompression",
+							 "Enable DML decompression",
+							 "Enable DML decompression when modifying compressed hypertable",
+							 &ts_guc_enable_dml_decompression,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
 	DefineCustomBoolVariable("timescaledb.enable_transparent_decompression",
 							 "Enable transparent decompression",
 							 "Enable transparent decompression when querying hypertable",
@@ -283,6 +297,18 @@ _guc_init(void)
 							 "Enable SkipScan",
 							 "Enable SkipScan for DISTINCT queries",
 							 &ts_guc_enable_skip_scan,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	DefineCustomBoolVariable("timescaledb.enable_decompression_sorted_merge",
+							 "Enable compressed batches heap merge",
+							 "Enable the merge of compressed batches to preserve the compression "
+							 "order by",
+							 &ts_guc_enable_decompression_sorted_merge,
 							 true,
 							 PGC_USERSET,
 							 0,
@@ -444,6 +470,18 @@ _guc_init(void)
 							 "Enable compression to take indexscan path",
 							 "Enable indexscan during compression, if matching index is found",
 							 &ts_guc_enable_compression_indexscan,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	DefineCustomBoolVariable("timescaledb.enable_bulk_decompression",
+							 "Enable decompression of the entire compressed batches",
+							 "Increases throughput of decompression, but might increase query "
+							 "memory usage",
+							 &ts_guc_enable_bulk_decompression,
 							 true,
 							 PGC_USERSET,
 							 0,

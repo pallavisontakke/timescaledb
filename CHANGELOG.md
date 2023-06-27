@@ -4,11 +4,23 @@
 `psql` with the `-X` flag to prevent any `.psqlrc` commands from
 accidentally triggering the load of a previous DB version.**
 
-## Unreleased
+## 2.11.0 (2023-05-12)
+
+This release contains new features and bug fixes since the 2.10.3 release.
+We deem it moderate priority for upgrading.
+
+This release includes these noteworthy features:
+* Support for DML operations on compressed chunks:
+  * UPDATE/DELETE support
+  * Support for unique constraints on compressed chunks
+  * Support for `ON CONFLICT DO UPDATE`
+  * Support for `ON CONFLICT DO NOTHING`
+* Join support for Hierarchical Continuous Aggregates
+* Performance improvements for real-time Hierarchical Continuous Aggregates
 
 **Features**
 * #5212 Allow pushdown of reference table joins
-* #5221 Improve Realtime Continuous Aggregate performance
+* #5261 Improve Realtime Continuous Aggregate performance
 * #5252 Improve unique constraint support on compressed hypertables
 * #5339 Support UPDATE/DELETE on compressed hypertables
 * #5344 Enable JOINS for Hierarchical Continuous Aggregates
@@ -18,6 +30,9 @@ accidentally triggering the load of a previous DB version.**
 * #5547 Skip Ordered Append when only 1 child node is present
 * #5510 Propagate vacuum/analyze to compressed chunks
 * #5584 Reduce decompression during constraint checking
+* #5530 Optimize compressed chunk resorting
+* #5639 Support sending telemetry event reports
+* #5150 MERGE support on hypertables
 
 **Bugfixes**
 * #5396 Fix SEGMENTBY columns predicates to be pushed down
@@ -30,10 +45,16 @@ accidentally triggering the load of a previous DB version.**
 * #5614 Enable run_job() for telemetry job
 * #5578 Fix on-insert decompression after schema changes
 * #5613 Quote username identifier appropriately
+* #5525 Fix tablespace for compressed hypertable and corresponding toast
+* #5642 Fix ALTER TABLE SET with normal tables
+* #5666 Reduce memory usage for distributed analyze
+* #5668 Fix subtransaction resource owner
+* #5680 Fix DISTINCT query with JOIN on multiple segmentby columns
 
 **Thanks**
 * @kovetskiy and @DZDomi for reporting peformance regression in Realtime Continuous Aggregates
 * @ollz272 for reporting an issue with interpolate error messages
+* @ericdevries for reporting an issue with DISTINCT queries using segmentby columns of compressed hypertable
 
 
 ## 2.10.3 (2023-04-26)

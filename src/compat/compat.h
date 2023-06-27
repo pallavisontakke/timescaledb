@@ -27,20 +27,22 @@
 #define is_supported_pg_version_13(version) ((version >= 130002) && (version < 140000))
 #define is_supported_pg_version_14(version) ((version >= 140000) && (version < 150000))
 #define is_supported_pg_version_15(version) ((version >= 150000) && (version < 160000))
+#define is_supported_pg_version_16(version) ((version >= 160000) && (version < 170000))
 
 /*
- * PG15 is in fact not yet supported, but we are working on this. The user will
- * be unable to compile aginst this version unless he/she explicitly uses
- * -DEXPERIMENTAL=ON. This is checked by our CMakeLists.txt.
+ * PG16 support is a WIP and not complete yet.
+ * To compile with PG16, use -DEXPERIMENTAL=ON with cmake.
  */
 #define is_supported_pg_version(version)                                                           \
 	(is_supported_pg_version_12(version) || is_supported_pg_version_13(version) ||                 \
-	 is_supported_pg_version_14(version) || is_supported_pg_version_15(version))
+	 is_supported_pg_version_14(version) || is_supported_pg_version_15(version) ||                 \
+	 is_supported_pg_version_16(version))
 
 #define PG12 is_supported_pg_version_12(PG_VERSION_NUM)
 #define PG13 is_supported_pg_version_13(PG_VERSION_NUM)
 #define PG14 is_supported_pg_version_14(PG_VERSION_NUM)
 #define PG15 is_supported_pg_version_15(PG_VERSION_NUM)
+#define PG16 is_supported_pg_version_16(PG_VERSION_NUM)
 
 #define PG13_LT (PG_VERSION_NUM < 130000)
 #define PG13_GE (PG_VERSION_NUM >= 130000)
@@ -48,6 +50,8 @@
 #define PG14_GE (PG_VERSION_NUM >= 140000)
 #define PG15_LT (PG_VERSION_NUM < 150000)
 #define PG15_GE (PG_VERSION_NUM >= 150000)
+#define PG16_LT (PG_VERSION_NUM < 160000)
+#define PG16_GE (PG_VERSION_NUM >= 160000)
 
 #if !(is_supported_pg_version(PG_VERSION_NUM))
 #error "Unsupported PostgreSQL version"
@@ -786,6 +790,22 @@ RelationGetSmgr(Relation rel)
 		smgrsetowner(&(rel->rd_smgr), smgropen(rel->rd_node, rel->rd_backend));
 	return rel->rd_smgr;
 }
+#endif
+
+#if PG14_LT
+/*
+ * pg_nodiscard was introduced with PostgreSQL 14
+ *
+ * pg_nodiscard means the compiler should warn if the result of a function
+ * call is ignored.  The name "nodiscard" is chosen in alignment with
+ * (possibly future) C and C++ standards.  For maximum compatibility, use it
+ * as a function declaration specifier, so it goes before the return type.
+ */
+#ifdef __GNUC__
+#define pg_nodiscard __attribute__((warn_unused_result))
+#else
+#define pg_nodiscard
+#endif
 #endif
 
 #endif /* TIMESCALEDB_COMPAT_H */
