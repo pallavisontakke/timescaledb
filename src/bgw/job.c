@@ -227,6 +227,8 @@ bgw_job_from_tupleinfo(TupleInfo *ti, size_t alloc_size)
 	job = MemoryContextAllocZero(ti->mctx, alloc_size);
 	tuple = ts_scanner_fetch_heap_tuple(ti, false, &should_free);
 
+	old_ctx = MemoryContextSwitchTo(ti->mctx);
+
 	/*
 	 * Using heap_deform_tuple instead of GETSTRUCT since the tuple can
 	 * contain NULL values. Some of these cannot really be null, but we check
@@ -265,7 +267,8 @@ bgw_job_from_tupleinfo(TupleInfo *ti, size_t alloc_size)
 	}
 
 	if (!nulls[AttrNumberGetAttrOffset(Anum_bgw_job_timezone)])
-		job->fd.timezone = DatumGetTextPP(values[AttrNumberGetAttrOffset(Anum_bgw_job_timezone)]);
+		job->fd.timezone =
+			DatumGetTextPCopy(values[AttrNumberGetAttrOffset(Anum_bgw_job_timezone)]);
 
 	if (!nulls[AttrNumberGetAttrOffset(Anum_bgw_job_retry_period)])
 		job->fd.retry_period =
@@ -296,12 +299,11 @@ bgw_job_from_tupleinfo(TupleInfo *ti, size_t alloc_size)
 		job->fd.hypertable_id =
 			DatumGetInt32(values[AttrNumberGetAttrOffset(Anum_bgw_job_hypertable_id)]);
 
-	old_ctx = MemoryContextSwitchTo(ti->mctx);
-
 	if (!nulls[AttrNumberGetAttrOffset(Anum_bgw_job_config)])
-		job->fd.config = DatumGetJsonbP(values[AttrNumberGetAttrOffset(Anum_bgw_job_config)]);
+		job->fd.config = DatumGetJsonbPCopy(values[AttrNumberGetAttrOffset(Anum_bgw_job_config)]);
 
 	MemoryContextSwitchTo(old_ctx);
+
 	if (should_free)
 		heap_freetuple(tuple);
 
@@ -366,7 +368,13 @@ ts_bgw_job_get_scheduled(size_t alloc_size, MemoryContext mctx)
 
 		BgwJob *job = MemoryContextAllocZero(mctx, alloc_size);
 		HeapTuple tuple = ts_scanner_fetch_heap_tuple(ti, false, &should_free);
-		memcpy(job, GETSTRUCT(tuple), sizeof(FormData_bgw_job));
+
+		/*
+		 * Note that the nullable columns might have variable width, so we
+		 * handle them below. We can only use memcpy for the non-nullable fixed
+		 * width starting part of the BgwJob struct.
+		 */
+		memcpy(job, GETSTRUCT(tuple), offsetof(FormData_bgw_job, fixed_schedule));
 
 		if (should_free)
 			heap_freetuple(tuple);
@@ -715,11 +723,22 @@ get_job_lock_for_delete(int32 job_id)
 			proc = BackendIdGetProc(vxid->backendId);
 			if (proc != NULL && proc->isBackgroundWorker)
 			{
-				elog(NOTICE,
-					 "cancelling the background worker for job %d (pid %d)",
-					 job_id,
-					 proc->pid);
-				DirectFunctionCall1(pg_cancel_backend, Int32GetDatum(proc->pid));
+				/* Simply assuming that this pid corresponds to the background worker
+				 * running the job is not sufficient. The scheduler could also be the
+				 * one holding the lock, when transitioning the state of the job back
+				 * to scheduled state. So we must check we don't kill the scheduler.
+				 * See https://github.com/timescale/timescaledb/issues/5224
+				 */
+				const char *worker_name = GetBackgroundWorkerTypeByPid(proc->pid);
+
+				if (strcmp(worker_name, SCHEDULER_APPNAME) != 0)
+				{
+					elog(NOTICE,
+						 "cancelling the background worker for job %d (pid %d)",
+						 job_id,
+						 proc->pid);
+					DirectFunctionCall1(pg_cancel_backend, Int32GetDatum(proc->pid));
+				}
 			}
 		}
 

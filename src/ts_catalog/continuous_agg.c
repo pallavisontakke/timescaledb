@@ -39,6 +39,7 @@
 #include "ts_catalog/catalog.h"
 #include "errors.h"
 #include "compression_with_clause.h"
+#include "utils.h"
 
 #define BUCKET_FUNCTION_SERIALIZE_VERSION 1
 #define CHECK_NAME_MATCH(name1, name2) (namestrcmp(name1, name2) == 0)
@@ -1015,7 +1016,7 @@ static ObjectAddress
 get_and_lock_rel_by_hypertable_id(int32 hypertable_id, LOCKMODE mode)
 {
 	ObjectAddress addr;
-	Oid relid = ts_hypertable_id_to_relid(hypertable_id);
+	Oid relid = ts_hypertable_id_to_relid(hypertable_id, true);
 	if (OidIsValid(relid))
 		LockRelationOid(relid, mode);
 	ObjectAddressSet(addr, RelationRelationId, relid);
@@ -1824,13 +1825,13 @@ ts_continuous_agg_get_query(ContinuousAgg *cagg)
 	 * the user view doesn't have the "GROUP BY" clause anymore.
 	 */
 	if (ContinuousAggIsFinalized(cagg))
-		cagg_view_oid =
-			get_relname_relid(NameStr(cagg->data.direct_view_name),
-							  get_namespace_oid(NameStr(cagg->data.direct_view_schema), false));
+		cagg_view_oid = ts_get_relation_relid(NameStr(cagg->data.direct_view_schema),
+											  NameStr(cagg->data.direct_view_name),
+											  false);
 	else
-		cagg_view_oid =
-			get_relname_relid(NameStr(cagg->data.user_view_name),
-							  get_namespace_oid(NameStr(cagg->data.user_view_schema), false));
+		cagg_view_oid = ts_get_relation_relid(NameStr(cagg->data.user_view_schema),
+											  NameStr(cagg->data.user_view_name),
+											  false);
 
 	cagg_view_rel = table_open(cagg_view_oid, AccessShareLock);
 	cagg_view_rules = cagg_view_rel->rd_rules;

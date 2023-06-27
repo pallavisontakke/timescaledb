@@ -58,9 +58,15 @@ typedef struct DecompressChunkColumnState
 			bool isnull;
 			int count;
 		} segmentby;
+
 		struct
 		{
+			/* For row-by-row decompression. */
 			DecompressionIterator *iterator;
+
+			/* For entire batch decompression, mutually exclusive with the above. */
+			Datum *datums;
+			bool *nulls;
 		} compressed;
 	};
 } DecompressChunkColumnState;
@@ -78,6 +84,7 @@ typedef struct DecompressBatchState
 	int total_batch_rows;
 	int current_batch_row;
 	MemoryContext per_batch_context;
+	MemoryContext arrow_context;
 } DecompressBatchState;
 
 typedef struct DecompressChunkState
@@ -101,6 +108,20 @@ typedef struct DecompressChunkState
 	struct binaryheap *merge_heap; /* Binary heap of slot indices */
 	int n_sortkeys;				   /* Number of sort keys for heap compare function */
 	SortSupportData *sortkeys;	   /* Sort keys for binary heap compare function */
+
+	bool using_bulk_decompression; /* For EXPLAIN ANALYZE. */
+
+	/*
+	 * Make non-refcounted copies of the tupdesc for reuse across all batch states
+	 * and avoid spending CPU in ResourceOwner when creating a big number of table
+	 * slots. This happens because each new slot pins its tuple descriptor using
+	 * PinTupleDesc, and for reference-counting tuples this involves adding a new
+	 * reference to ResourceOwner, which is not very efficient for a large number of
+	 * references.
+	 */
+	TupleDesc decompressed_slot_projected_tdesc;
+	TupleDesc decompressed_slot_scan_tdesc;
+	TupleDesc compressed_slot_tdesc;
 } DecompressChunkState;
 
 extern Node *decompress_chunk_state_create(CustomScan *cscan);
@@ -110,7 +131,7 @@ extern DecompressSlotNumber decompress_get_free_batch_state_id(DecompressChunkSt
 extern void decompress_initialize_batch(DecompressChunkState *chunk_state,
 										DecompressBatchState *batch_state, TupleTableSlot *subslot);
 
-extern void decompress_get_next_tuple_from_batch(DecompressChunkState *chunk_state,
+extern bool decompress_get_next_tuple_from_batch(DecompressChunkState *chunk_state,
 												 DecompressBatchState *batch_state);
 
 extern void decompress_set_batch_state_to_unused(DecompressChunkState *chunk_state, int batch_id);

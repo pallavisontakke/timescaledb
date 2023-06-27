@@ -714,7 +714,7 @@ get_or_add_baserel_from_cache(Oid chunk_reloid, Oid parent_reloid)
 		int32 parent_hypertable_id = ts_chunk_get_hypertable_id_by_relid(chunk_reloid);
 		if (parent_hypertable_id != INVALID_HYPERTABLE_ID)
 		{
-			Assert(ts_hypertable_id_to_relid(parent_hypertable_id) == parent_reloid);
+			Assert(ts_hypertable_id_to_relid(parent_hypertable_id, false) == parent_reloid);
 
 			if (ht != NULL)
 			{
@@ -733,10 +733,7 @@ get_or_add_baserel_from_cache(Oid chunk_reloid, Oid parent_reloid)
 		if (hypertable_id != INVALID_HYPERTABLE_ID)
 		{
 			/* Hypertable reloid not specified by the caller, look it up. */
-			parent_reloid = ts_hypertable_id_to_relid(hypertable_id);
-			Ensure(OidIsValid(parent_reloid),
-				   "unable to get valid parent Oid for hypertable %d",
-				   hypertable_id);
+			parent_reloid = ts_hypertable_id_to_relid(hypertable_id, /* return_invalid */ false);
 
 			ht = ts_planner_get_hypertable(parent_reloid, CACHE_FLAG_NONE);
 			Assert(ht != NULL);
@@ -916,26 +913,6 @@ should_chunk_append(Hypertable *ht, PlannerInfo *root, RelOptInfo *rel, Path *pa
 							return true;
 					}
 					return false;
-				}
-
-				/*
-				 * Check for partial compressed chunks.
-				 *
-				 * When partial compressed chunks are present we can not do 1-level
-				 * ordered append. We instead need nested Appends to correctly preserve
-				 * ordering. For now we skip ordered append optimization when we encounter
-				 * partial chunks.
-				 */
-				foreach (lc, merge->subpaths)
-				{
-					Path *child = lfirst(lc);
-					RelOptInfo *chunk_rel = child->parent;
-					if (chunk_rel->fdw_private)
-					{
-						TimescaleDBPrivate *private = chunk_rel->fdw_private;
-						if (private->chunk && ts_chunk_is_partial(private->chunk))
-							return false;
-					}
 				}
 
 				pk = linitial_node(PathKey, path->pathkeys);
@@ -1267,13 +1244,33 @@ timescaledb_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, Rang
 			break;
 		case TS_REL_CHUNK_STANDALONE:
 		case TS_REL_CHUNK_CHILD:
-			/* Check for UPDATE/DELETE (DML) on compressed chunks */
+			/* Check for UPDATE/DELETE/MERGE (DML) on compressed chunks */
 			if (IS_UPDL_CMD(root->parse) && dml_involves_hypertable(root, ht, rti))
 			{
 				if (ts_cm_functions->set_rel_pathlist_dml != NULL)
 					ts_cm_functions->set_rel_pathlist_dml(root, rel, rti, rte, ht);
 				break;
 			}
+#if PG15_GE
+			/*
+			 * For MERGE command if there is an UPDATE or DELETE action, then
+			 * do not allow this to succeed on compressed chunks
+			 */
+			if (root->parse->commandType == CMD_MERGE && dml_involves_hypertable(root, ht, rti))
+			{
+				ListCell *ml;
+				foreach (ml, root->parse->mergeActionList)
+				{
+					MergeAction *action = (MergeAction *) lfirst(ml);
+					if (action->commandType == CMD_UPDATE || action->commandType == CMD_DELETE)
+					{
+						if (ts_cm_functions->set_rel_pathlist_dml != NULL)
+							ts_cm_functions->set_rel_pathlist_dml(root, rel, rti, rte, ht);
+					}
+				}
+				break;
+			}
+#endif
 			TS_FALLTHROUGH;
 		default:
 			apply_optimizations(root, reltype, rel, rte, ht);
@@ -1475,35 +1472,41 @@ replace_hypertable_modify_paths(PlannerInfo *root, List *pathlist, RelOptInfo *i
 		if (IsA(path, ModifyTablePath))
 		{
 			ModifyTablePath *mt = castNode(ModifyTablePath, path);
-
+			RangeTblEntry *rte = planner_rt_fetch(mt->nominalRelation, root);
+			Hypertable *ht = ts_planner_get_hypertable(rte->relid, CACHE_FLAG_CHECK);
 			if (
 #if PG14_GE
 				/* We only route UPDATE/DELETE through our CustomNode for PG 14+ because
 				 * the codepath for earlier versions is different. */
 				mt->operation == CMD_UPDATE || mt->operation == CMD_DELETE ||
 #endif
-#if PG15_GE
-				mt->operation == CMD_MERGE ||
-#endif
 				mt->operation == CMD_INSERT)
 			{
-				RangeTblEntry *rte = planner_rt_fetch(mt->nominalRelation, root);
-				Hypertable *ht = ts_planner_get_hypertable(rte->relid, CACHE_FLAG_CHECK);
-
-#if PG15_GE
-				if (ht && mt->operation == CMD_MERGE)
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("The MERGE command does not support hypertables in this "
-									"version"),
-							 errhint("Check https://github.com/timescale/timescaledb/issues/4929 "
-									 "for more information and current status")));
-#endif
 				if (ht && (mt->operation == CMD_INSERT || !hypertable_is_distributed(ht)))
 				{
 					path = ts_hypertable_modify_path_create(root, mt, ht, input_rel);
 				}
 			}
+#if PG15_GE
+			if (ht && mt->operation == CMD_MERGE)
+			{
+				List *firstMergeActionList = linitial(mt->mergeActionLists);
+				ListCell *l;
+				/*
+				 * Iterate over merge action to check if there is an INSERT sql.
+				 * If so, then add ChunkDispatch node.
+				 */
+				foreach (l, firstMergeActionList)
+				{
+					MergeAction *action = (MergeAction *) lfirst(l);
+					if (action->commandType == CMD_INSERT)
+					{
+						path = ts_hypertable_modify_path_create(root, mt, ht, input_rel);
+						break;
+					}
+				}
+			}
+#endif
 		}
 
 		new_pathlist = lappend(new_pathlist, path);

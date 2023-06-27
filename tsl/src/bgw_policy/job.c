@@ -185,8 +185,7 @@ check_valid_index(Hypertable *ht, const char *index_name)
 	HeapTuple idxtuple;
 	Form_pg_index index_form;
 
-	index_oid =
-		get_relname_relid(index_name, get_namespace_oid(NameStr(ht->fd.schema_name), false));
+	index_oid = ts_get_relation_relid(NameStr(ht->fd.schema_name), (char *) index_name, true);
 	idxtuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
 	if (!HeapTupleIsValid(idxtuple))
 		ereport(ERROR,
@@ -266,7 +265,7 @@ policy_reorder_read_and_validate_config(Jsonb *config, PolicyReorderData *policy
 	{
 		policy->hypertable = ht;
 		policy->index_relid =
-			get_relname_relid(index_name, get_namespace_oid(NameStr(ht->fd.schema_name), false));
+			ts_get_relation_relid(NameStr(ht->fd.schema_name), (char *) index_name, false);
 	}
 }
 
@@ -300,7 +299,7 @@ policy_retention_read_and_validate_config(Jsonb *config, PolicyRetentionData *po
 	Datum boundary_type;
 	ContinuousAgg *cagg;
 
-	object_relid = ts_hypertable_id_to_relid(policy_retention_get_hypertable_id(config));
+	object_relid = ts_hypertable_id_to_relid(policy_retention_get_hypertable_id(config), false);
 	hypertable = ts_hypertable_cache_get_cache_and_entry(object_relid, CACHE_FLAG_NONE, &hcache);
 	open_dim = get_open_dimension_for_hypertable(hypertable);
 
@@ -316,9 +315,9 @@ policy_retention_read_and_validate_config(Jsonb *config, PolicyRetentionData *po
 	cagg = ts_continuous_agg_find_by_mat_hypertable_id(hypertable->fd.id);
 	if (cagg)
 	{
-		const char *const view_name = NameStr(cagg->data.user_view_name);
-		const char *const schema_name = NameStr(cagg->data.user_view_schema);
-		object_relid = get_relname_relid(view_name, get_namespace_oid(schema_name, false));
+		object_relid = ts_get_relation_relid(NameStr(cagg->data.user_view_schema),
+											 NameStr(cagg->data.user_view_name),
+											 false);
 	}
 
 	ts_cache_release(hcache);
@@ -450,7 +449,8 @@ policy_invoke_recompress_chunk(Chunk *chunk)
 void
 policy_compression_read_and_validate_config(Jsonb *config, PolicyCompressionData *policy_data)
 {
-	Oid table_relid = ts_hypertable_id_to_relid(policy_compression_get_hypertable_id(config));
+	Oid table_relid =
+		ts_hypertable_id_to_relid(policy_compression_get_hypertable_id(config), false);
 	Cache *hcache;
 	Hypertable *hypertable =
 		ts_hypertable_cache_get_cache_and_entry(table_relid, CACHE_FLAG_NONE, &hcache);
@@ -464,7 +464,8 @@ policy_compression_read_and_validate_config(Jsonb *config, PolicyCompressionData
 void
 policy_recompression_read_and_validate_config(Jsonb *config, PolicyCompressionData *policy_data)
 {
-	Oid table_relid = ts_hypertable_id_to_relid(policy_compression_get_hypertable_id(config));
+	Oid table_relid =
+		ts_hypertable_id_to_relid(policy_compression_get_hypertable_id(config), false);
 	Cache *hcache;
 	Hypertable *hypertable =
 		ts_hypertable_cache_get_cache_and_entry(table_relid, CACHE_FLAG_NONE, &hcache);

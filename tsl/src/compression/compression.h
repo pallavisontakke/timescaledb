@@ -11,8 +11,10 @@
 #include <executor/tuptable.h>
 #include <fmgr.h>
 #include <lib/stringinfo.h>
-#include <access/heapam.h>
 #include <utils/relcache.h>
+
+typedef struct BulkInsertStateData *BulkInsertState;
+
 #include <nodes/execnodes.h>
 #include "segment_meta.h"
 
@@ -70,6 +72,8 @@ struct Compressor
 	void (*append_val)(Compressor *compressor, Datum val);
 	void *(*finish)(Compressor *data);
 };
+
+typedef struct ArrowArray ArrowArray;
 
 typedef struct DecompressionIterator
 {
@@ -164,6 +168,7 @@ typedef struct CompressionAlgorithmDefinition
 {
 	DecompressionIterator *(*iterator_init_forward)(Datum, Oid element_type);
 	DecompressionIterator *(*iterator_init_reverse)(Datum, Oid element_type);
+	ArrowArray *(*decompress_all)(Datum, Oid element_type);
 	void (*compressed_data_send)(CompressedDataHeader *, StringInfo);
 	Datum (*compressed_data_recv)(StringInfo);
 
@@ -220,6 +225,10 @@ typedef struct RowCompressor
 	BulkInsertState bistate;
 	/* segment by index Oid if any */
 	Oid index_oid;
+	/* relation info necessary to update indexes on compressed table */
+	ResultRelInfo *resultRelInfo;
+	/* segment by index index in the RelInfo if any */
+	int8 segmentby_index_index;
 
 	/* in theory we could have more input columns than outputted ones, so we
 	   store the number of inputs/compressors separately */
@@ -246,8 +255,8 @@ typedef struct RowCompressor
 	bool *compressed_is_null;
 	int64 rowcnt_pre_compression;
 	int64 num_compressed_rows;
-	/* if recompressing segmentwise, we must know this so we can reset the sequence number */
-	bool segmentwise_recompress;
+	/* if recompressing segmentwise, we use this info to reset the sequence number */
+	bool reset_sequence;
 	/* flag for checking if we are working on the first tuple */
 	bool first_iteration;
 } RowCompressor;
@@ -286,8 +295,10 @@ pg_attribute_unused() assert_num_compression_algorithms_sane(void)
 	StaticAssertStmt(COMPRESSION_ALGORITHM_GORILLA == 3, "algorithm index has changed");
 	StaticAssertStmt(COMPRESSION_ALGORITHM_DELTADELTA == 4, "algorithm index has changed");
 
-	/* This should change when adding a new algorithm after adding the new algorithm to the assert
-	 * list above. This statement prevents adding a new algorithm without updating the asserts above
+	/*
+	 * This should change when adding a new algorithm after adding the new
+	 * algorithm to the assert list above. This statement prevents adding a
+	 * new algorithm without updating the asserts above
 	 */
 	StaticAssertStmt(_END_COMPRESSION_ALGORITHMS == 5,
 					 "number of algorithms have changed, the asserts should be updated");
@@ -301,6 +312,9 @@ extern void decompress_chunk(Oid in_table, Oid out_table);
 
 extern DecompressionIterator *(*tsl_get_decompression_iterator_init(
 	CompressionAlgorithms algorithm, bool reverse))(Datum, Oid element_type);
+
+extern ArrowArray *tsl_try_decompress_all(CompressionAlgorithms algorithm, Datum compressed_data,
+										  Oid element_type);
 
 typedef struct Chunk Chunk;
 typedef struct ChunkInsertState ChunkInsertState;
@@ -335,7 +349,7 @@ extern void row_compressor_init(RowCompressor *row_compressor, TupleDesc uncompr
 								Relation compressed_table, int num_compression_infos,
 								const ColumnCompressionInfo **column_compression_info,
 								int16 *column_offsets, int16 num_columns_in_compressed_table,
-								bool need_bistate, bool segmentwise_recompress);
+								bool need_bistate, bool reset_sequence);
 extern void row_compressor_finish(RowCompressor *row_compressor);
 extern void populate_per_compressed_columns_from_data(PerCompressedColumn *per_compressed_cols,
 													  int16 num_cols, Datum *compressed_datums,
@@ -345,5 +359,40 @@ extern void row_compressor_append_sorted_rows(RowCompressor *row_compressor,
 extern void segment_info_update(SegmentInfo *segment_info, Datum val, bool is_null);
 
 extern RowDecompressor build_decompressor(Relation in_rel, Relation out_rel);
+
+/*
+ * A convenience macro to throw an error about the corrupted compressed data, if
+ * the argument is false. When fuzzing is enabled, we don't show the message not
+ * to pollute the logs.
+ */
+#ifndef TS_COMPRESSION_FUZZING
+#define CORRUPT_DATA_MESSAGE                                                                       \
+	(errmsg("the compressed data is corrupt"), errcode(ERRCODE_DATA_CORRUPTED))
+#else
+#define CORRUPT_DATA_MESSAGE (errcode(ERRCODE_DATA_CORRUPTED))
+#endif
+
+#define CheckCompressedData(X)                                                                     \
+	if (!(X))                                                                                      \
+	ereport(ERROR, CORRUPT_DATA_MESSAGE)
+
+inline static void *
+consumeCompressedData(StringInfo si, int bytes)
+{
+	CheckCompressedData(bytes >= 0);
+	CheckCompressedData(bytes < PG_INT32_MAX / 2);
+	CheckCompressedData(si->cursor + bytes >= 0);
+	CheckCompressedData(si->cursor + bytes <= si->len);
+
+	void *result = si->data + si->cursor;
+	si->cursor += bytes;
+	return result;
+}
+
+/*
+ * Normal compression uses 1k rows, but the regression tests use up to 1015.
+ * We use this limit for sanity checks in case the compressed data is corrupt.
+ */
+#define GLOBAL_MAX_ROWS_PER_COMPRESSION 1015
 
 #endif
